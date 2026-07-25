@@ -209,7 +209,7 @@ marketing suite or Stacksync's enterprise-scale sync.
    instead of localhost, confirming `APP_URL` took effect after being set
    in Render's Environment tab (added alongside the Partner Dashboard's
    allowed-redirect-URLs update, keeping the localhost entry for local dev).
-8. [CODE DONE, LOCALLY VERIFIED — fix not yet redeployed] Real-world test.
+8. [DONE, VERIFIED] Real-world test.
    First registered the actual Shopify webhook subscriptions (verified
    2026-07-24 this had never happened — `GET /admin/api/2026-07/webhooks.json`
    returned `{"webhooks":[]}`; every prior test was a hand-signed payload
@@ -244,11 +244,30 @@ marketing suite or Stacksync's enterprise-scale sync.
      entirely and update the cached id directly, sidestepping the lag.
    Re-ran the 5-concurrent-call stress test for both contacts and deals
    after the fix: both now converge on exactly one id. Test records deleted
-   afterward. `tsc`/`npm run build` clean, local server healthy.
-   Remaining before this step is actually done: commit, push, let Render
-   redeploy, then re-verify against the live deployment (ideally with
-   another real order, now that webhook subscriptions exist) that the fix
-   holds in production too.
+   afterward. `tsc`/`npm run build` clean.
+   Committed, pushed, Render redeployed. Re-verified against the live
+   deployment itself (not just locally): fired 5 concurrent signed webhook
+   requests at `https://hubshop.onrender.com/webhooks/shopify/*` for a
+   brand-new email and a brand-new dealname — exactly the pattern that
+   produced duplicates pre-fix. Both converged on exactly one record in
+   HubSpot. Test records deleted afterward.
+   One more real-order finding, from three actual test orders placed
+   through the storefront (`#1001`/`#1002`/`#1003`): deals landed with no
+   pipeline or stage at all ("Select a pipeline"/"Select a stage" in the
+   UI) — correcting a wrong assumption from step 5. `HUBSPOT_DEAL_PIPELINE`/
+   `HUBSPOT_DEAL_STAGE` being blank does NOT make HubSpot fall back to a
+   default pipeline/stage; it just omits them entirely. (Also worth
+   knowing: HubSpot's activity feed shows "created from Floppy-Australia"
+   on these deals — that's not a second integration, it's `hs_object_source
+   _detail_1`, i.e. this app's own Private App display name in the portal,
+   never renamed from whatever it defaulted to at creation. Harmless.) Set
+   `HUBSPOT_DEAL_PIPELINE=default`/`HUBSPOT_DEAL_STAGE=closedwon` (this
+   portal's only pipeline; Closed Won because a synced Shopify order is
+   already a completed transaction, not an open opportunity moving through
+   a sales process) and re-synced all three existing test deals through the
+   real `orders/updated` webhook path (not a manual patch) — confirmed all
+   three now carry `pipeline: default, dealstage: closedwon`. Needs the
+   same two env vars added on Render to take effect there too.
 9. Business steps: Shopify App Store review (needs a privacy policy — touches
    customer PII), billing/pricing setup. Also, before any real merchant's
    token lands in it: encrypt `shopify_installations.access_token` at rest
@@ -257,3 +276,22 @@ marketing suite or Stacksync's enterprise-scale sync.
    solely on Supabase's disk-level encryption and DB access controls. Fine
    as plaintext for now (own token, own database) — flagged here so it
    doesn't get dropped once this goes multi-merchant.
+   Also required before going live (explicit user instruction 2026-07-25:
+   "we only go to step 9 once everything is perfect" — this is a go-live
+   gate, not a someday-maybe): configurable mapping from Shopify order
+   conditions (financial_status, fulfillment_status, cancelled) to HubSpot
+   deal pipeline/stage/owner, replacing the single static
+   `HUBSPOT_DEAL_PIPELINE`/`HUBSPOT_DEAL_STAGE` pair `upsertDealByName`
+   applies to every synced order regardless of status today. A merchant
+   whose business needs e.g. refunded orders to land in Closed Lost instead
+   of Closed Won, or large orders routed to a specific owner, currently has
+   no way to express that. Three designs discussed, none chosen yet:
+   (a) a couple more named env vars for the common case (e.g.
+   `HUBSPOT_DEAL_STAGE_REFUNDED`) — quick, covers the most likely real
+   need, no new syntax; (b) a JSON rules list in one env var (ordered
+   `{when: {...}, pipeline, stage, owner}` objects, first match wins) —
+   handles arbitrary condition combinations, still just a config edit, no
+   new infra; (c) a real settings UI with per-merchant persistence — needs
+   actual auth beyond today's single `ADMIN_API_KEY` and probably belongs
+   with this same step's multi-merchant work rather than bolted onto the
+   current single-store setup. Revisit and pick one before launch.
