@@ -171,15 +171,44 @@ marketing suite or Stacksync's enterprise-scale sync.
    logged as `status: error` with the actual HubSpot validation message,
    and the route correctly still returns 500 so Shopify would retry the
    delivery). Test contact/deal deleted afterward.
-7. Deployment: hosting, environment secrets, HTTPS. Explicitly includes:
-   gating `/sync-status` behind a static API key (checked with
-   `crypto.timingSafeEqual`, one new env var, applied only to that route —
-   not `/health`, which the host's uptime checks need unauthenticated, and
-   not the webhook routes, which already have their own HMAC check) —
-   chosen over Basic Auth (needless extra username for a single operator)
-   or an IP allowlist (bad fit for a dynamic home IP, adds real-client-IP
-   handling behind whatever the host puts in front of the app). Must be
-   live before the server is publicly reachable, not added after.
+7. [DONE, VERIFIED] Deployment — Render free tier, live at
+   `https://hubshop.onrender.com`. Repo pushed to
+   `github.com/EliasGouatarbes/hubshop` (wasn't a git repo before this —
+   initialized at the project root, i.e. `hubspot-shopify-sync/` where
+   `package.json` lives, not the wrapping folder). `render.yaml` Blueprint
+   defines the service (build: `npm install && npm run build`, start:
+   `npm start`, health check `/health`, `plan: free`); secrets marked
+   `sync: false` so they're prompted for in Render's dashboard, never
+   committed. `package.json` got an `engines.node: ">=20"` field.
+   Fixed a real bug this surfaced: the OAuth redirect URI and the SDK's
+   `hostName`/`hostScheme` were hardcoded to `http://localhost:<port>` —
+   harmless locally, wrong once there's a real public URL. Now driven by a
+   new `APP_URL` config var (optional, falls back to localhost so nothing
+   breaks in dev; only matters for re-running the OAuth handshake, since
+   the token itself already lives in the DB from step 5).
+   `/sync-status` gate landed as planned: a static `ADMIN_API_KEY`, checked
+   with `crypto.timingSafeEqual`, applied only to that route — not
+   `/health` (Render's own health check needs it unauthenticated) and not
+   the webhook routes (already HMAC-verified). Chose this over Basic Auth
+   (unneeded extra username for a single operator) or an IP allowlist (bad
+   fit for a dynamic home IP). It was live before the service was ever
+   publicly reachable, not bolted on after.
+   One real deploy hiccup, noted here in case it recurs: the first deploy
+   ran only `npm install` as the build command (skipping `npm run build`),
+   crashing on `Cannot find module '.../dist/server.js'` — Render had
+   created the service via its own auto-detected commands rather than
+   reading `render.yaml`. Fixed by manually setting Build Command to
+   `npm install && npm run build` in the service's Settings tab; a fresh
+   Blueprint-flow service (New → Blueprint, not New → Web Service) should
+   read `render.yaml` correctly from the start.
+   Verified against the live deployment: `/health` returns 200 with
+   `database.connected: true` and `hubspot.authenticated: true`;
+   `/sync-status` returns 401 with no key and 200 with the correct one;
+   `/auth/shopify`'s redirect now carries
+   `redirect_uri=https://hubshop.onrender.com/auth/shopify/callback`
+   instead of localhost, confirming `APP_URL` took effect after being set
+   in Render's Environment tab (added alongside the Partner Dashboard's
+   allowed-redirect-URLs update, keeping the localhost entry for local dev).
 8. Real-world test: real test orders through the dev store, verify in
    HubSpot. First task, before placing any test order: register the actual
    Shopify webhook subscriptions (`orders/create`, `orders/updated`,
