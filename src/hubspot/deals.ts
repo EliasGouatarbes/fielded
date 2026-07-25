@@ -1,6 +1,4 @@
-import { AssociationTypes } from '@hubspot/api-client';
-import { hubspotClient } from './client';
-import { config } from '../config';
+import { Client as HubSpotClient, AssociationTypes } from '@hubspot/api-client';
 import { withRetry } from '../retry';
 import { extractConflictingId } from './conflict';
 import { withKeyedLock } from '../mutex';
@@ -13,32 +11,56 @@ export interface DealProperties {
   // integration become unsearchable by order number.
   dealname: string;
   amount?: string;
+  // Resolved per-order by src/hubspot/dealRules.ts against the merchant's
+  // own rules (multi-merchant step) — this function just persists whatever
+  // it's given, it makes no pipeline/stage/owner decisions itself.
+  pipeline?: string;
+  stage?: string;
+  owner?: string;
 }
 
 // Search-before-create by dealname (the order number): a retried
 // orders/create or an orders/updated webhook must update the existing deal,
-// not create a duplicate.
-export async function upsertDealByName(deal: DealProperties, contactId?: string): Promise<string> {
-  return withKeyedLock(`deal:${deal.dealname}`, () => upsertDealByNameLocked(deal, contactId));
+// not create a duplicate. `client`/`shopDomain` are per-merchant: the
+// client is resolved against that merchant's own HubSpot portal, and
+// shopDomain scopes the lock/cache keys so two merchants sharing an order
+// number format can't collide in the shared in-process cache.
+export async function upsertDealByName(
+  client: HubSpotClient,
+  shopDomain: string,
+  deal: DealProperties,
+  contactId?: string
+): Promise<string> {
+  return withKeyedLock(`${shopDomain}:deal:${deal.dealname}`, () =>
+    upsertDealByNameLocked(client, shopDomain, deal, contactId)
+  );
 }
 
-async function upsertDealByNameLocked(deal: DealProperties, contactId?: string): Promise<string> {
-  const cacheKey = `deal:${deal.dealname}`;
+async function upsertDealByNameLocked(
+  client: HubSpotClient,
+  shopDomain: string,
+  deal: DealProperties,
+  contactId?: string
+): Promise<string> {
+  const cacheKey = `${shopDomain}:deal:${deal.dealname}`;
 
   const properties: Record<string, string> = { dealname: deal.dealname };
   if (deal.amount !== undefined) {
     properties.amount = deal.amount;
   }
-  if (config.hubspot.dealPipeline) {
-    properties.pipeline = config.hubspot.dealPipeline;
+  if (deal.pipeline) {
+    properties.pipeline = deal.pipeline;
   }
-  if (config.hubspot.dealStage) {
-    properties.dealstage = config.hubspot.dealStage;
+  if (deal.stage) {
+    properties.dealstage = deal.stage;
+  }
+  if (deal.owner) {
+    properties.hubspot_owner_id = deal.owner;
   }
 
   const cachedId = getCachedId(cacheKey);
   if (cachedId) {
-    await withRetry(() => hubspotClient.crm.deals.basicApi.update(cachedId, { properties }), {
+    await withRetry(() => client.crm.deals.basicApi.update(cachedId, { properties }), {
       label: `HubSpot deal update (${cachedId})`,
     });
     return cachedId;
@@ -46,7 +68,7 @@ async function upsertDealByNameLocked(deal: DealProperties, contactId?: string):
 
   const searchResult = await withRetry(
     () =>
-      hubspotClient.crm.deals.searchApi.doSearch({
+      client.crm.deals.searchApi.doSearch({
         filterGroups: [
           {
             // 'as any': see contacts.ts — same nominal-enum-from-codegen situation.
@@ -61,7 +83,7 @@ async function upsertDealByNameLocked(deal: DealProperties, contactId?: string):
 
   const existing = searchResult.results[0];
   if (existing) {
-    await withRetry(() => hubspotClient.crm.deals.basicApi.update(existing.id, { properties }), {
+    await withRetry(() => client.crm.deals.basicApi.update(existing.id, { properties }), {
       label: `HubSpot deal update (${existing.id})`,
     });
     setCachedId(cacheKey, existing.id);
@@ -71,7 +93,7 @@ async function upsertDealByNameLocked(deal: DealProperties, contactId?: string):
   try {
     const created = await withRetry(
       () =>
-        hubspotClient.crm.deals.basicApi.create({
+        client.crm.deals.basicApi.create({
           properties,
           associations: contactId
             ? [
@@ -99,7 +121,7 @@ async function upsertDealByNameLocked(deal: DealProperties, contactId?: string):
     const conflictId = extractConflictingId(err);
     if (!conflictId) throw err;
 
-    await withRetry(() => hubspotClient.crm.deals.basicApi.update(conflictId, { properties }), {
+    await withRetry(() => client.crm.deals.basicApi.update(conflictId, { properties }), {
       label: `HubSpot deal update after conflict (${conflictId})`,
     });
     setCachedId(cacheKey, conflictId);

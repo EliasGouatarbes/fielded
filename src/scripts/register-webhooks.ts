@@ -1,14 +1,13 @@
 // One-time webhook subscription registration (CLAUDE.md step 8, first
 // task): tells Shopify to actually call this app's webhook receiver.
-// Everything through step 6 only ever exercised src/shopify/webhooks.ts
-// with hand-signed payloads curled directly at it — Shopify itself was
-// never told to send anything, so a real order placed before this runs
-// would silently do nothing. Requires a real https:// address (Shopify
-// rejects localhost), so this could only happen after step 7's deploy.
-// Run with, e.g.: APP_URL=https://hubshop.onrender.com npm run register-webhooks
+// Requires a real https:// address (Shopify rejects localhost), so this
+// could only happen after step 7's deploy. Run with, e.g.:
+// APP_URL=https://hubshop.onrender.com npm run register-webhooks -- <shop-domain>
+// (falls back to SHOPIFY_STORE_DOMAIN if the shop arg is omitted, for
+// single-merchant local dev).
 import { config } from '../config';
 import { pool } from '../db/client';
-import { resolveShopifyAccessToken } from '../shopify/token';
+import { resolveShopifyAccessToken, normalizeShopDomain } from '../shopify/token';
 import { shopifyAdminRequest } from '../shopify/admin-rest';
 import { withRetry } from '../retry';
 
@@ -24,12 +23,12 @@ async function registerWebhooks(): Promise<void> {
   if (!config.server.appUrl.startsWith('https://')) {
     throw new Error(
       `APP_URL must be a real https:// URL for Shopify to call — got "${config.server.appUrl}". ` +
-        `Run with e.g.: APP_URL=https://hubshop.onrender.com npm run register-webhooks`
+        `Run with e.g.: APP_URL=https://hubshop.onrender.com npm run register-webhooks -- <shop-domain>`
     );
   }
 
-  const shop = config.shopify.storeDomain.replace(/^https?:\/\//, '');
-  const accessToken = await resolveShopifyAccessToken();
+  const shop = normalizeShopDomain(process.argv[2] ?? config.shopify.storeDomain);
+  const accessToken = await resolveShopifyAccessToken(shop);
   const apiPath = `/admin/api/${config.shopify.apiVersion}/webhooks.json`;
 
   // Search-before-create, same as everywhere else in this app: Shopify

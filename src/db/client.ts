@@ -13,17 +13,34 @@ export const pool = new Pool({
 
 let schemaReady: Promise<void> | undefined;
 
-// Bare-bones schema setup: one small table, no real migration history to
-// manage yet. Idempotent, so it's safe to call on every process start
-// (server, backfill script) rather than needing a separate migrate step.
+// Bare-bones schema setup, idempotent so it's safe to call on every process
+// start (server, backfill/register-webhooks scripts) rather than needing a
+// separate migrate step. This targets the full multi-merchant `merchants`
+// shape directly for fresh environments — an existing deployment with data
+// in the older `shopify_installations` table needs the one-time manual
+// migration documented in CLAUDE.md (rename + ADD COLUMN IF NOT EXISTS) run
+// once against that database before deploying this code.
 export function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     schemaReady = pool
       .query(
         `
-      CREATE TABLE IF NOT EXISTS shopify_installations (
+      CREATE TABLE IF NOT EXISTS merchants (
         shop_domain TEXT PRIMARY KEY,
-        access_token TEXT NOT NULL,
+        shopify_access_token TEXT NOT NULL,
+
+        hubspot_portal_id BIGINT,
+        hubspot_access_token TEXT,
+        hubspot_refresh_token TEXT,
+        hubspot_token_expires_at TIMESTAMPTZ,
+        hubspot_connected_at TIMESTAMPTZ,
+
+        deal_pipeline TEXT NOT NULL DEFAULT '',
+        deal_stage TEXT NOT NULL DEFAULT '',
+        deal_rules JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+        admin_api_key_hash TEXT,
+
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
@@ -33,11 +50,13 @@ export function ensureSchema(): Promise<void> {
         entity_type TEXT NOT NULL,
         shopify_id TEXT NOT NULL,
         hubspot_id TEXT,
+        shop_domain TEXT,
         status TEXT NOT NULL,
         error_message TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
       CREATE INDEX IF NOT EXISTS sync_log_created_at_idx ON sync_log (created_at DESC);
+      CREATE INDEX IF NOT EXISTS sync_log_shop_created_idx ON sync_log (shop_domain, created_at DESC);
     `
       )
       .then(() => undefined);

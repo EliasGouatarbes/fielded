@@ -1,4 +1,4 @@
-import { hubspotClient } from './client';
+import { Client as HubSpotClient } from '@hubspot/api-client';
 import { withRetry } from '../retry';
 import { extractConflictingId } from './conflict';
 import { withKeyedLock } from '../mutex';
@@ -22,13 +22,27 @@ export interface ContactProperties {
 
 // Search-before-create: a retried Shopify webhook must update the existing
 // contact, not create a duplicate. Email is the natural unique key here.
-export async function upsertContactByEmail(contact: ContactProperties): Promise<string> {
-  return withKeyedLock(`contact:${contact.email}`, () => upsertContactByEmailLocked(contact));
+// `client`/`shopDomain` are per-merchant (multi-merchant step): the client
+// is resolved per-request against that merchant's own HubSpot portal, and
+// shopDomain scopes the lock/cache keys so two merchants sharing an email
+// address can't collide in the shared in-process cache.
+export async function upsertContactByEmail(
+  client: HubSpotClient,
+  shopDomain: string,
+  contact: ContactProperties
+): Promise<string> {
+  return withKeyedLock(`${shopDomain}:contact:${contact.email}`, () =>
+    upsertContactByEmailLocked(client, shopDomain, contact)
+  );
 }
 
-async function upsertContactByEmailLocked(contact: ContactProperties): Promise<string> {
+async function upsertContactByEmailLocked(
+  client: HubSpotClient,
+  shopDomain: string,
+  contact: ContactProperties
+): Promise<string> {
   const { email, ...rest } = contact;
-  const cacheKey = `contact:${email}`;
+  const cacheKey = `${shopDomain}:contact:${email}`;
 
   const properties: Record<string, string> = { email };
   for (const [key, value] of Object.entries(rest)) {
@@ -39,7 +53,7 @@ async function upsertContactByEmailLocked(contact: ContactProperties): Promise<s
 
   const cachedId = getCachedId(cacheKey);
   if (cachedId) {
-    await withRetry(() => hubspotClient.crm.contacts.basicApi.update(cachedId, { properties }), {
+    await withRetry(() => client.crm.contacts.basicApi.update(cachedId, { properties }), {
       label: `HubSpot contact update (${cachedId})`,
     });
     return cachedId;
@@ -47,7 +61,7 @@ async function upsertContactByEmailLocked(contact: ContactProperties): Promise<s
 
   const searchResult = await withRetry(
     () =>
-      hubspotClient.crm.contacts.searchApi.doSearch({
+      client.crm.contacts.searchApi.doSearch({
         filterGroups: [
           {
             // 'as any': FilterOperatorEnum is a nominal string enum internal to
@@ -64,7 +78,7 @@ async function upsertContactByEmailLocked(contact: ContactProperties): Promise<s
 
   const existing = searchResult.results[0];
   if (existing) {
-    await withRetry(() => hubspotClient.crm.contacts.basicApi.update(existing.id, { properties }), {
+    await withRetry(() => client.crm.contacts.basicApi.update(existing.id, { properties }), {
       label: `HubSpot contact update (${existing.id})`,
     });
     setCachedId(cacheKey, existing.id);
@@ -72,7 +86,7 @@ async function upsertContactByEmailLocked(contact: ContactProperties): Promise<s
   }
 
   try {
-    const created = await withRetry(() => hubspotClient.crm.contacts.basicApi.create({ properties }), {
+    const created = await withRetry(() => client.crm.contacts.basicApi.create({ properties }), {
       label: `HubSpot contact create (${email})`,
     });
     setCachedId(cacheKey, created.id);
@@ -84,7 +98,7 @@ async function upsertContactByEmailLocked(contact: ContactProperties): Promise<s
     const conflictId = extractConflictingId(err);
     if (!conflictId) throw err;
 
-    await withRetry(() => hubspotClient.crm.contacts.basicApi.update(conflictId, { properties }), {
+    await withRetry(() => client.crm.contacts.basicApi.update(conflictId, { properties }), {
       label: `HubSpot contact update after conflict (${conflictId})`,
     });
     setCachedId(cacheKey, conflictId);

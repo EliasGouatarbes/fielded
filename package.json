@@ -11,7 +11,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "backfill": "ts-node --transpile-only src/scripts/backfill.ts",
-    "register-webhooks": "ts-node --transpile-only src/scripts/register-webhooks.ts"
+    "register-webhooks": "ts-node --transpile-only src/scripts/register-webhooks.ts",
+    "migrate-merchants": "ts-node --transpile-only src/scripts/migrate-merchants.ts"
   },
   "dependencies": {
     "@hubspot/api-client": "^14.0.1",

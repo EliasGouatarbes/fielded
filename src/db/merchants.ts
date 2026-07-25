@@ -1,0 +1,99 @@
+import { pool, ensureSchema } from './client';
+import { DealRule } from '../hubspot/dealRules';
+
+export interface Merchant {
+  shopDomain: string;
+  shopifyAccessToken: string;
+  hubspotPortalId: string | null;
+  hubspotAccessToken: string | null;
+  hubspotRefreshToken: string | null;
+  hubspotTokenExpiresAt: Date | null;
+  dealPipeline: string;
+  dealStage: string;
+  dealRules: DealRule[];
+  adminApiKeyHash: string | null;
+}
+
+interface MerchantRow {
+  shop_domain: string;
+  shopify_access_token: string;
+  hubspot_portal_id: string | null;
+  hubspot_access_token: string | null;
+  hubspot_refresh_token: string | null;
+  hubspot_token_expires_at: Date | null;
+  deal_pipeline: string;
+  deal_stage: string;
+  deal_rules: DealRule[];
+  admin_api_key_hash: string | null;
+}
+
+function toMerchant(row: MerchantRow): Merchant {
+  return {
+    shopDomain: row.shop_domain,
+    shopifyAccessToken: row.shopify_access_token,
+    hubspotPortalId: row.hubspot_portal_id,
+    hubspotAccessToken: row.hubspot_access_token,
+    hubspotRefreshToken: row.hubspot_refresh_token,
+    hubspotTokenExpiresAt: row.hubspot_token_expires_at,
+    dealPipeline: row.deal_pipeline,
+    dealStage: row.deal_stage,
+    dealRules: row.deal_rules,
+    adminApiKeyHash: row.admin_api_key_hash,
+  };
+}
+
+export async function getMerchant(shopDomain: string): Promise<Merchant | null> {
+  await ensureSchema();
+  const result = await pool.query<MerchantRow>('SELECT * FROM merchants WHERE shop_domain = $1', [shopDomain]);
+  const row = result.rows[0];
+  return row ? toMerchant(row) : null;
+}
+
+// Shopify half of onboarding (existing OAuth handshake, unchanged logic —
+// only the destination table/column names changed).
+export async function saveShopifyToken(shopDomain: string, accessToken: string): Promise<void> {
+  await ensureSchema();
+  await pool.query(
+    `INSERT INTO merchants (shop_domain, shopify_access_token, updated_at)
+     VALUES ($1, $2, now())
+     ON CONFLICT (shop_domain) DO UPDATE SET shopify_access_token = EXCLUDED.shopify_access_token, updated_at = now()`,
+    [shopDomain, accessToken]
+  );
+}
+
+// HubSpot half of onboarding — requires the Shopify row to already exist
+// (the merchant must have installed via Shopify first; /auth/hubspot
+// enforces this before redirecting).
+export async function saveHubSpotConnection(
+  shopDomain: string,
+  params: { accessToken: string; refreshToken: string; expiresAt: Date; portalId: string }
+): Promise<void> {
+  await ensureSchema();
+  await pool.query(
+    `UPDATE merchants
+     SET hubspot_access_token = $2,
+         hubspot_refresh_token = $3,
+         hubspot_token_expires_at = $4,
+         hubspot_portal_id = $5,
+         hubspot_connected_at = now(),
+         updated_at = now()
+     WHERE shop_domain = $1`,
+    [shopDomain, params.accessToken, params.refreshToken, params.expiresAt, params.portalId]
+  );
+}
+
+export async function saveDealRules(shopDomain: string, rules: DealRule[]): Promise<void> {
+  await ensureSchema();
+  await pool.query(
+    `UPDATE merchants SET deal_rules = $2, updated_at = now() WHERE shop_domain = $1`,
+    [shopDomain, JSON.stringify(rules)]
+  );
+}
+
+export async function saveAdminApiKeyHash(shopDomain: string, hash: string): Promise<void> {
+  await ensureSchema();
+  await pool.query(
+    `UPDATE merchants SET admin_api_key_hash = $2, updated_at = now() WHERE shop_domain = $1`,
+    [shopDomain, hash]
+  );
+}

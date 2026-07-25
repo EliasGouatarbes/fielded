@@ -1,5 +1,4 @@
 import https from 'https';
-import { config } from '../config';
 import { resolveShopifyAccessToken } from './token';
 import { withRetry } from '../retry';
 
@@ -96,10 +95,10 @@ function nextPath(linkHeader?: string): string | undefined {
 
 // Fetches every page of a Shopify Admin REST list endpoint. `initialPath`
 // should include the query string for the first page (filters, limit);
-// subsequent pages are driven entirely by the Link header.
-export async function fetchAllPages<T>(initialPath: string, resourceKey: string): Promise<T[]> {
-  const shop = config.shopify.storeDomain.replace(/^https?:\/\//, '');
-  const accessToken = await resolveShopifyAccessToken();
+// subsequent pages are driven entirely by the Link header. `shop` is the
+// merchant to fetch for (multi-merchant step).
+export async function fetchAllPages<T>(shop: string, initialPath: string, resourceKey: string): Promise<T[]> {
+  const accessToken = await resolveShopifyAccessToken(shop);
   const items: T[] = [];
   let path: string | undefined = initialPath;
 

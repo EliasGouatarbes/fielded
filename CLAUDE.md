@@ -269,29 +269,80 @@ marketing suite or Stacksync's enterprise-scale sync.
    three now carry `pipeline: default, dealstage: closedwon`. Needs the
    same two env vars added on Render to take effect there too.
 9. Business steps: Shopify App Store review (needs a privacy policy — touches
-   customer PII), billing/pricing setup. Also, before any real merchant's
-   token lands in it: encrypt `shopify_installations.access_token` at rest
-   (e.g. AES-256-GCM with a key held outside Postgres itself — a secrets
-   manager, not another env var next to `DATABASE_URL`) rather than relying
-   solely on Supabase's disk-level encryption and DB access controls. Fine
-   as plaintext for now (own token, own database) — flagged here so it
-   doesn't get dropped once this goes multi-merchant.
-   Also required before going live (explicit user instruction 2026-07-25:
-   "we only go to step 9 once everything is perfect" — this is a go-live
-   gate, not a someday-maybe): configurable mapping from Shopify order
-   conditions (financial_status, fulfillment_status, cancelled) to HubSpot
-   deal pipeline/stage/owner, replacing the single static
-   `HUBSPOT_DEAL_PIPELINE`/`HUBSPOT_DEAL_STAGE` pair `upsertDealByName`
-   applies to every synced order regardless of status today. A merchant
-   whose business needs e.g. refunded orders to land in Closed Lost instead
-   of Closed Won, or large orders routed to a specific owner, currently has
-   no way to express that. Three designs discussed, none chosen yet:
-   (a) a couple more named env vars for the common case (e.g.
-   `HUBSPOT_DEAL_STAGE_REFUNDED`) — quick, covers the most likely real
-   need, no new syntax; (b) a JSON rules list in one env var (ordered
-   `{when: {...}, pipeline, stage, owner}` objects, first match wins) —
-   handles arbitrary condition combinations, still just a config edit, no
-   new infra; (c) a real settings UI with per-merchant persistence — needs
-   actual auth beyond today's single `ADMIN_API_KEY` and probably belongs
-   with this same step's multi-merchant work rather than bolted onto the
-   current single-store setup. Revisit and pick one before launch.
+   customer PII), billing/pricing setup.
+   [DONE — multi-merchant + configurable deal mapping, 2026-07-25] Per
+   explicit user instruction ("we only go to step 9 once everything is
+   perfect" — a go-live gate, not a someday-maybe) plus a follow-up
+   clarification that merchants' data must land in *their own* HubSpot
+   portal, never the developer's: replaced the single static
+   `HUBSPOT_ACCESS_TOKEN`/`HUBSPOT_DEAL_PIPELINE`/`HUBSPOT_DEAL_STAGE`
+   globals with real per-merchant HubSpot OAuth and per-merchant
+   configurable deal-mapping rules. Design doc:
+   `C:\Users\elias\.claude\plans\federated-knitting-rabbit.md`. Summary:
+   - `shopify_installations` renamed to `merchants` (one-time migration via
+     `npm run migrate-merchants`, run by hand against the live DB before
+     deploying this code) — now holds both the Shopify token and the
+     HubSpot OAuth token/refresh token/portal id/expiry, plus per-merchant
+     `deal_pipeline`/`deal_stage` defaults, an ordered `deal_rules` JSONB
+     array, and a hashed per-merchant admin API key.
+   - New `/auth/hubspot?shop=...` + `/auth/hubspot/callback` (src/hubspot/
+     oauth.ts), mirroring the existing Shopify handshake (now extracted to
+     src/shopify/oauth.ts) — linked from the Shopify callback's success
+     page so a real install chains Shopify-connect -> HubSpot-connect in
+     one browser session. Both flows' `state` param is now a signed,
+     stateless HMAC (src/oauthState.ts) instead of the old single in-memory
+     variable, which broke under concurrent installs.
+   - `src/hubspot/tokens.ts` resolves + auto-refreshes a merchant's HubSpot
+     access token (30-minute lifetime) and builds a per-request HubSpot
+     client — replaces the old module-level `hubspotClient` singleton
+     (`src/hubspot/client.ts`, deleted). `contacts.ts`/`deals.ts` now take
+     `(client, shopDomain, ...)` instead of importing a shared client; their
+     in-process mutex/id-cache keys are shop-scoped so two merchants can't
+     collide.
+   - `src/hubspot/dealRules.ts`: chose design (b) from the three discussed
+     below — an ordered JSON rules list (`{when: {financial_status?,
+     fulfillment_status?, cancelled?}, pipeline, stage, owner?}`, first
+     match wins, falling back to the merchant's own `deal_pipeline`/
+     `deal_stage`). Edited via `GET`/`PUT /merchants/:shop/deal-rules`
+     (key-authenticated, REST only — no settings UI this pass, per explicit
+     user decision). Design (a), named env vars, didn't generalize to
+     per-merchant or to owner routing; design (c), a full settings UI, was
+     ruled out for this pass since it needs real auth beyond a bearer key.
+   - `/sync-status` and the deal-rules endpoints accept either the global
+     `ADMIN_API_KEY` (operator key, cross-merchant) or a merchant's own
+     per-merchant key (shown once at HubSpot-connect time, stored hashed).
+   - Webhook receiver now resolves "which merchant" from Shopify's
+     `X-Shopify-Shop-Domain` header per request; HMAC verification itself
+     stays on the single shared `SHOPIFY_API_SECRET_KEY` since every
+     merchant installs the same Partner-Dashboard app.
+   - Backfill/register-webhooks scripts take a shop domain as a CLI arg now
+     (`npm run backfill -- <shop>`), falling back to `SHOPIFY_STORE_DOMAIN`
+     for single-merchant local dev.
+   - New required env vars: `HUBSPOT_CLIENT_ID`, `HUBSPOT_CLIENT_SECRET`
+     (from a HubSpot Developer account public app — Auth tab), and
+     `OAUTH_STATE_SECRET` (random, signs both OAuth flows' state param).
+   - **Not yet done — remaining manual steps before this is live**: (1) run
+     `npm run migrate-merchants` against the Supabase DB; (2) create/open
+     the HubSpot public app and set its redirect URL to
+     `<APP_URL>/auth/hubspot/callback`, fill `HUBSPOT_CLIENT_ID`/
+     `HUBSPOT_CLIENT_SECRET` in `.env` and Render; generate and set
+     `OAUTH_STATE_SECRET` in Render too (a local value already exists in
+     `.env`, Render needs its own); (3) visit `/auth/hubspot?shop=<own
+     store>` logged into the *same* HubSpot portal the old static token
+     pointed at, to bring the existing store back online as "merchant #1"
+     without losing its already-synced contacts/deals; (4) remove the now-
+     unused `HUBSPOT_ACCESS_TOKEN`/`HUBSPOT_DEAL_PIPELINE`/
+     `HUBSPOT_DEAL_STAGE` from Render once step 3 is confirmed working.
+   - **Known gap, flagged not built this pass**: if a merchant revokes
+     HubSpot access from inside their portal, their refresh token dies and
+     every sync for that shop starts failing (visible in `sync_log`, no
+     proactive alert/reconnect prompt yet). Decide before real merchants
+     are live.
+   Before any real merchant's token lands in the database: encrypt
+   `merchants.shopify_access_token`/`hubspot_access_token`/
+   `hubspot_refresh_token` at rest (e.g. AES-256-GCM with a key held outside
+   Postgres itself — a secrets manager, not another env var next to
+   `DATABASE_URL`) rather than relying solely on Supabase's disk-level
+   encryption and DB access controls. Fine as plaintext for now (dev-only
+   data) — flagged here so it doesn't get dropped now that this is actually
+   multi-merchant.

@@ -1,27 +1,25 @@
 import { config } from '../config';
-import { getStoredAccessToken, saveAccessToken } from '../db/shopifyInstallations';
+import { getMerchant, saveShopifyToken } from '../db/merchants';
 
 export function normalizeShopDomain(domain: string): string {
   return domain.replace(/^https?:\/\//, '');
 }
 
-// The Postgres row is the real source of truth as of step 5. Falls back to
-// (and seeds the database from) SHOPIFY_ADMIN_ACCESS_TOKEN in .env — the
-// placeholder storage the step-2 OAuth handshake used — so a store that
-// already completed that handshake doesn't have to redo it after this
-// migration.
-export async function resolveShopifyAccessToken(): Promise<string> {
-  const shop = normalizeShopDomain(config.shopify.storeDomain);
-
-  const stored = await getStoredAccessToken(shop);
-  if (stored) return stored;
+// The Postgres row is the real source of truth as of step 5. Takes the shop
+// domain as a parameter (multi-merchant step) rather than always reading
+// the single SHOPIFY_STORE_DOMAIN env var — that env var now only matters
+// as a local-dev default (see callers) and as the seed value below for
+// bridging an old single-store deployment's .env token into the database.
+export async function resolveShopifyAccessToken(shopDomain: string): Promise<string> {
+  const stored = await getMerchant(shopDomain);
+  if (stored) return stored.shopifyAccessToken;
 
   if (config.shopify.adminAccessToken) {
-    await saveAccessToken(shop, config.shopify.adminAccessToken);
+    await saveShopifyToken(shopDomain, config.shopify.adminAccessToken);
     return config.shopify.adminAccessToken;
   }
 
   throw new Error(
-    'No Shopify access token in the database or .env. Run the OAuth handshake at /auth/shopify first.'
+    `No Shopify access token in the database or .env for ${shopDomain}. Run the OAuth handshake at /auth/shopify?shop=${shopDomain} first.`
   );
 }

@@ -1,11 +1,16 @@
 import { upsertContactByEmail } from './hubspot/contacts';
 import { upsertDealByName } from './hubspot/deals';
+import { evaluateDealRules } from './hubspot/dealRules';
+import { MerchantContext } from './hubspot/tokens';
 import { logSyncResult } from './db/syncLog';
 
 // Shared between the webhook receiver (src/shopify/webhooks.ts) and the
 // historical backfill script (src/scripts/backfill.ts) — both need the exact
 // same Shopify-payload-to-HubSpot mapping, whether the payload arrives via
-// webhook or via a REST Admin API listing.
+// webhook or via a REST Admin API listing. `merchant` (multi-merchant step)
+// carries which HubSpot portal to write into and that merchant's own
+// deal-mapping rules — every call site resolves it once per shop, never a
+// shared global.
 
 export interface ShopifyAddress {
   address1?: string | null;
@@ -27,13 +32,18 @@ export interface ShopifyOrder {
   name: string; // e.g. "#1001" — the human-facing order number
   total_price?: string | null;
   customer?: ShopifyCustomer | null;
+  financial_status?: string | null;
+  fulfillment_status?: string | null;
+  // Shopify's real Order resource has no boolean `cancelled` field, only
+  // this nullable timestamp — evaluateDealRules derives the boolean itself.
+  cancelled_at?: string | null;
 }
 
-export async function syncCustomer(customer: ShopifyCustomer): Promise<string | undefined> {
+export async function syncCustomer(customer: ShopifyCustomer, merchant: MerchantContext): Promise<string | undefined> {
   if (!customer.email) return undefined;
 
   try {
-    const hubspotId = await upsertContactByEmail({
+    const hubspotId = await upsertContactByEmail(merchant.hubspotClient, merchant.shopDomain, {
       email: customer.email,
       firstname: customer.first_name ?? undefined,
       lastname: customer.last_name ?? undefined,
@@ -44,7 +54,13 @@ export async function syncCustomer(customer: ShopifyCustomer): Promise<string | 
       zip: customer.default_address?.zip ?? undefined,
       country: customer.default_address?.country ?? undefined,
     });
-    await logSyncResult({ entityType: 'customer', shopifyId: customer.email, hubspotId, status: 'success' });
+    await logSyncResult({
+      entityType: 'customer',
+      shopifyId: customer.email,
+      hubspotId,
+      status: 'success',
+      shopDomain: merchant.shopDomain,
+    });
     return hubspotId;
   } catch (err) {
     await logSyncResult({
@@ -52,29 +68,53 @@ export async function syncCustomer(customer: ShopifyCustomer): Promise<string | 
       shopifyId: customer.email,
       status: 'error',
       errorMessage: err instanceof Error ? err.message : String(err),
+      shopDomain: merchant.shopDomain,
     });
     throw err;
   }
 }
 
-export async function syncOrder(order: ShopifyOrder): Promise<void> {
+export async function syncOrder(order: ShopifyOrder, merchant: MerchantContext): Promise<void> {
   try {
-    const contactId = order.customer ? await syncCustomer(order.customer) : undefined;
+    const contactId = order.customer ? await syncCustomer(order.customer, merchant) : undefined;
+
+    const target = evaluateDealRules(
+      merchant.dealRules,
+      {
+        financial_status: order.financial_status,
+        fulfillment_status: order.fulfillment_status,
+        cancelled: Boolean(order.cancelled_at),
+      },
+      merchant.dealPipeline,
+      merchant.dealStage
+    );
 
     const hubspotId = await upsertDealByName(
+      merchant.hubspotClient,
+      merchant.shopDomain,
       {
         dealname: order.name,
         amount: order.total_price ?? undefined,
+        pipeline: target.pipeline,
+        stage: target.stage,
+        owner: target.owner,
       },
       contactId
     );
-    await logSyncResult({ entityType: 'order', shopifyId: order.name, hubspotId, status: 'success' });
+    await logSyncResult({
+      entityType: 'order',
+      shopifyId: order.name,
+      hubspotId,
+      status: 'success',
+      shopDomain: merchant.shopDomain,
+    });
   } catch (err) {
     await logSyncResult({
       entityType: 'order',
       shopifyId: order.name,
       status: 'error',
       errorMessage: err instanceof Error ? err.message : String(err),
+      shopDomain: merchant.shopDomain,
     });
     throw err;
   }

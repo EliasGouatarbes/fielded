@@ -13,14 +13,17 @@ export interface AppConfig {
     port: number;
     // Public base URL this instance is reachable at — e.g.
     // https://hubspot-shopify-sync.onrender.com in production, or
-    // http://localhost:3000 locally. Used only to build the OAuth redirect
-    // URI, so it's optional with a localhost fallback: nothing breaks
-    // locally, and the Shopify token already sitting in the database (step
-    // 5) keeps working in production even if this is never set — it only
-    // matters if the handshake needs to be re-run against the deployed URL.
+    // http://localhost:3000 locally. Used to build both OAuth redirect URIs
+    // (Shopify and HubSpot), so it's optional with a localhost fallback:
+    // nothing breaks locally, and tokens already sitting in the database
+    // keep working in production even if this is never set — it only
+    // matters if a handshake needs to be (re-)run against the deployed URL.
     appUrl: string;
-    // Gates GET /sync-status (step 6) — required once the server is
-    // publicly reachable, per the step-7 plan in CLAUDE.md.
+    // Global operator override for merchant-scoped endpoints (/sync-status,
+    // deal-rules CRUD) — grants cross-merchant access without needing every
+    // individual merchant's own per-merchant key (CLAUDE.md multi-merchant
+    // step). Per-merchant keys are generated at HubSpot-connect time and
+    // stored hashed in the merchants table, not here.
     adminApiKey: string;
   };
   db: {
@@ -34,10 +37,14 @@ export interface AppConfig {
     apiVersion: string;
   };
   hubspot: {
-    accessToken: string;
-    dealPipeline: string;
-    dealStage: string;
+    clientId: string;
+    clientSecret: string;
   };
+  // Signs the stateless OAuth `state` param for both the Shopify and
+  // HubSpot handshakes (see src/shopify/oauth.ts / src/hubspot/oauth.ts) —
+  // deliberately its own secret rather than reusing SHOPIFY_API_SECRET_KEY,
+  // since these are two independent trust boundaries.
+  oauthStateSecret: string;
 }
 
 const REQUIRED_VARS = [
@@ -45,16 +52,18 @@ const REQUIRED_VARS = [
   'SHOPIFY_STORE_DOMAIN',
   'SHOPIFY_API_KEY',
   'SHOPIFY_API_SECRET_KEY',
-  'HUBSPOT_ACCESS_TOKEN',
+  'HUBSPOT_CLIENT_ID',
+  'HUBSPOT_CLIENT_SECRET',
+  'OAUTH_STATE_SECRET',
   'ADMIN_API_KEY',
 ] as const;
 // SHOPIFY_ADMIN_ACCESS_TOKEN is deliberately NOT required at boot: as of
-// step 5, the Postgres row in `shopify_installations` (see src/db/) is the
-// real source of truth for this token, written there by the OAuth callback.
-// This env var now only matters once, as a seed value read by
-// src/shopify/token.ts on first run against an empty database — bridging
-// whatever token you got from the step-2 handshake into real persistence.
-// It's read as optional below and can be blank once that migration has run.
+// step 5, the Postgres row in `merchants` (see src/db/) is the real source
+// of truth for this token, written there by the OAuth callback. This env
+// var now only matters once, as a seed value read by src/shopify/token.ts
+// on first run against an empty database — bridging whatever token you got
+// from the step-2 handshake into real persistence. It's read as optional
+// below and can be blank once that migration has run.
 
 function loadConfig(): AppConfig {
   const missing = REQUIRED_VARS.filter((name) => {
@@ -86,14 +95,10 @@ function loadConfig(): AppConfig {
       apiVersion: optional('SHOPIFY_API_VERSION', '2026-07'),
     },
     hubspot: {
-      accessToken: process.env.HUBSPOT_ACCESS_TOKEN as string,
-      // Optional: if unset, deal creation omits pipeline/dealstage and lets
-      // HubSpot fall back to the portal's default pipeline and its first
-      // stage. Set these if that default isn't what you want, or if deal
-      // creation errors demanding a dealstage.
-      dealPipeline: optional('HUBSPOT_DEAL_PIPELINE', ''),
-      dealStage: optional('HUBSPOT_DEAL_STAGE', ''),
+      clientId: process.env.HUBSPOT_CLIENT_ID as string,
+      clientSecret: process.env.HUBSPOT_CLIENT_SECRET as string,
     },
+    oauthStateSecret: process.env.OAUTH_STATE_SECRET as string,
   };
 }
 
