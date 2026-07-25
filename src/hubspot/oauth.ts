@@ -51,7 +51,17 @@ hubspotOAuthRouter.get('/auth/hubspot', async (req, res) => {
 });
 
 hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
-  const { code, state } = req.query;
+  const { code, state, error, error_description: errorDescription } = req.query;
+
+  // HubSpot redirects here with `error`/`error_description` instead of
+  // `code` when it rejects the request itself (denied consent, app
+  // misconfiguration, etc.) — surface that directly rather than the
+  // generic "missing parameters" message below, which was indistinguishable
+  // from an actual client bug.
+  if (typeof error === 'string') {
+    res.status(400).send(`HubSpot rejected the connection: ${error}${errorDescription ? ` — ${errorDescription}` : ''}`);
+    return;
+  }
 
   if (typeof code !== 'string' || typeof state !== 'string') {
     res.status(400).send('Missing required OAuth query parameters.');

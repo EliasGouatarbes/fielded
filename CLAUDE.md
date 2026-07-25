@@ -321,18 +321,38 @@ marketing suite or Stacksync's enterprise-scale sync.
    - New required env vars: `HUBSPOT_CLIENT_ID`, `HUBSPOT_CLIENT_SECRET`
      (from a HubSpot Developer account public app — Auth tab), and
      `OAUTH_STATE_SECRET` (random, signs both OAuth flows' state param).
-   - **Not yet done — remaining manual steps before this is live**: (1) run
-     `npm run migrate-merchants` against the Supabase DB; (2) create/open
-     the HubSpot public app and set its redirect URL to
-     `<APP_URL>/auth/hubspot/callback`, fill `HUBSPOT_CLIENT_ID`/
-     `HUBSPOT_CLIENT_SECRET` in `.env` and Render; generate and set
-     `OAUTH_STATE_SECRET` in Render too (a local value already exists in
-     `.env`, Render needs its own); (3) visit `/auth/hubspot?shop=<own
-     store>` logged into the *same* HubSpot portal the old static token
-     pointed at, to bring the existing store back online as "merchant #1"
-     without losing its already-synced contacts/deals; (4) remove the now-
-     unused `HUBSPOT_ACCESS_TOKEN`/`HUBSPOT_DEAL_PIPELINE`/
-     `HUBSPOT_DEAL_STAGE` from Render once step 3 is confirmed working.
+   - **[DONE — all manual steps completed and verified live, 2026-07-25]**
+     Ran `npm run migrate-merchants` against Supabase (had to stop it
+     importing `src/config.ts`, which now hard-requires the HubSpot OAuth
+     vars this migration runs *before* they exist — rewrote it to open its
+     own `pg.Pool` directly off `DATABASE_URL` instead). Two real-world
+     surprises creating the HubSpot app, worth knowing for next time:
+     (1) HubSpot disabled the old "click Create app -> Public" wizard as of
+     June 2026 — new public/OAuth apps now require their CLI (`npm install
+     -g @hubspot/cli`, `hs account auth`, `hs project create` with
+     Distribution: marketplace + Authentication: oauth, then set
+     `redirectUrls`/`requiredScopes` in the generated `app-hsmeta.json` and
+     `hs project upload`); (2) even for an unlisted/private-use OAuth app,
+     the developer account must sign HubSpot's Acceptable Use Policy (on
+     the app's Marketplace-listing tab) before any install/OAuth callback
+     will complete — otherwise it fails with "the app developer has not
+     signed the acceptable use policy" before ever reaching this app's
+     code. `HUBSPOT_CLIENT_ID`/`HUBSPOT_CLIENT_SECRET`/`OAUTH_STATE_SECRET`
+     set in both `.env` and Render (Render's `OAUTH_STATE_SECRET` is its
+     own separately-generated value, not copied from local — each
+     environment signs its own state independently, no reason they need to
+     match). Connected the existing store at `/auth/hubspot?shop=
+     hubspottest-retveu6u.myshopify.com`, logged into the same HubSpot
+     portal (148962866) the old static token pointed at — confirmed via
+     `merchants.hubspot_portal_id`. End-to-end smoke test: replayed a real
+     signed `orders/updated` webhook for `#1001` against the live Render
+     deployment; `sync_log` shows it resolved to the *same* existing deal
+     id (`512948276440`) and contact id (`830121312472`) rather than
+     creating new ones — proves the full chain (webhook -> merchant lookup
+     by shop domain -> HubSpot OAuth token -> existing-record upsert) works
+     against a real HubSpot portal, not just against the dev/local setup.
+     Old `HUBSPOT_ACCESS_TOKEN`/`HUBSPOT_DEAL_PIPELINE`/`HUBSPOT_DEAL_STAGE`
+     already removed from Render's env vars.
    - **Known gap, flagged not built this pass**: if a merchant revokes
      HubSpot access from inside their portal, their refresh token dies and
      every sync for that shop starts failing (visible in `sync_log`, no
