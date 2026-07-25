@@ -10,7 +10,7 @@ interface AdminRestResponse {
 
 // Carries the HTTP status and headers so src/retry.ts can recognize a 429
 // (with Shopify's Retry-After header) or a transient 5xx.
-class ShopifyAdminApiError extends Error {
+export class ShopifyAdminApiError extends Error {
   code: number;
   headers: Record<string, string | string[] | undefined>;
 
@@ -21,16 +21,30 @@ class ShopifyAdminApiError extends Error {
   }
 }
 
-function adminRestGet(shop: string, path: string, accessToken: string): Promise<AdminRestResponse> {
+// Shared low-level request: used for GET (fetchAllPages, below) and for POST
+// (src/scripts/register-webhooks.ts) — same auth header, same error/retry
+// shape either way.
+export function shopifyAdminRequest(
+  shop: string,
+  path: string,
+  accessToken: string,
+  method: 'GET' | 'POST',
+  requestBody?: unknown
+): Promise<AdminRestResponse> {
   return new Promise((resolve, reject) => {
+    const payload = requestBody !== undefined ? JSON.stringify(requestBody) : undefined;
+
     const req = https.request(
       {
         hostname: shop,
         path,
-        method: 'GET',
+        method,
         headers: {
           'X-Shopify-Access-Token': accessToken,
           Accept: 'application/json',
+          ...(payload !== undefined
+            ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+            : {}),
         },
       },
       (res) => {
@@ -45,7 +59,7 @@ function adminRestGet(shop: string, path: string, accessToken: string): Promise<
           } else {
             reject(
               new ShopifyAdminApiError(
-                `Shopify Admin API request to ${path} failed (${statusCode}): ${body}`,
+                `Shopify Admin API ${method} ${path} failed (${statusCode}): ${body}`,
                 statusCode,
                 res.headers
               )
@@ -55,6 +69,7 @@ function adminRestGet(shop: string, path: string, accessToken: string): Promise<
       }
     );
     req.on('error', reject);
+    if (payload !== undefined) req.write(payload);
     req.end();
   });
 }
@@ -90,9 +105,10 @@ export async function fetchAllPages<T>(initialPath: string, resourceKey: string)
 
   while (path) {
     const currentPath = path;
-    const { body, linkHeader } = await withRetry(() => adminRestGet(shop, currentPath, accessToken), {
-      label: `Shopify Admin API GET ${currentPath}`,
-    });
+    const { body, linkHeader } = await withRetry(
+      () => shopifyAdminRequest(shop, currentPath, accessToken, 'GET'),
+      { label: `Shopify Admin API GET ${currentPath}` }
+    );
 
     const parsed = JSON.parse(body) as Record<string, T[]>;
     items.push(...(parsed[resourceKey] ?? []));

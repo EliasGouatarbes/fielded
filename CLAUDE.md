@@ -209,22 +209,46 @@ marketing suite or Stacksync's enterprise-scale sync.
    instead of localhost, confirming `APP_URL` took effect after being set
    in Render's Environment tab (added alongside the Partner Dashboard's
    allowed-redirect-URLs update, keeping the localhost entry for local dev).
-8. Real-world test: real test orders through the dev store, verify in
-   HubSpot. First task, before placing any test order: register the actual
-   Shopify webhook subscriptions (`orders/create`, `orders/updated`,
-   `customers/create`) against the deployed HTTPS URL from step 7 — verified
-   2026-07-24 that this was never done (`GET /admin/api/2026-07/webhooks.json`
-   on the dev store returns `{"webhooks":[]}`, and no code anywhere calls
-   Shopify's subscription-creation endpoint). Everything through step 6 only
-   ever exercised the receiver with hand-signed payloads curled directly at
-   `/webhooks/shopify/*`; Shopify itself was never told to call it, so a real
-   order placed before this would silently do nothing. Couldn't have been
-   done earlier — registering a webhook address requires a real HTTPS URL,
-   and `http://localhost` was never valid to register. Do it as a small
-   one-time script (same shape as `src/scripts/backfill.ts`, reusing
-   `resolveShopifyAccessToken()`), not inside the OAuth callback — that
-   callback already ran for this store, and auto-registering webhooks
-   on every install belongs to step 9's multi-merchant flow, not now.
+8. [CODE DONE, LOCALLY VERIFIED — fix not yet redeployed] Real-world test.
+   First registered the actual Shopify webhook subscriptions (verified
+   2026-07-24 this had never happened — `GET /admin/api/2026-07/webhooks.json`
+   returned `{"webhooks":[]}`; every prior test was a hand-signed payload
+   curled directly at `/webhooks/shopify/*`, Shopify itself never told to
+   call it). New `src/scripts/register-webhooks.ts` (`npm run
+   register-webhooks`, same shape as `backfill.ts`) registers `orders/create`,
+   `orders/updated`, `customers/create` against `APP_URL`; generalized
+   `admin-rest.ts`'s HTTP helper to support POST rather than duplicating it.
+   Confirmed idempotent (re-running finds the existing subscriptions by
+   topic+address, doesn't duplicate) and confirmed live via Shopify's API.
+   Then placed a real order through the dev store's storefront. Final state
+   was correct — one contact, one deal, right field mapping, right
+   association — but `/sync-status` showed real 409 errors along the way
+   that self-healed only because Shopify happened to retry the failed
+   delivery. Root cause: Shopify fired `customers/create` and
+   `orders/create`'s embedded customer sync close enough together that both
+   searched HubSpot before either create had landed in the search index,
+   so both attempted create.
+   Reproduced deliberately (concurrent calls for a brand-new email/dealname)
+   and fixed in two layers:
+   - `src/mutex.ts` (`withKeyedLock`): serializes calls sharing a natural
+     key (email, dealname) within this process, closing the true-concurrency
+     case.
+   - That alone wasn't sufficient for deals: unlike contacts, where email
+     has a real server-side uniqueness constraint (the 409 our recovery
+     path in `src/hubspot/conflict.ts` catches), **HubSpot enforces no
+     uniqueness on `dealname`** — a search-index-lag race there doesn't
+     error, it silently creates a duplicate deal. Confirmed with a
+     5-concurrent-call test: 5 distinct deal ids, zero errors. Fixed with
+     `src/hubspot/idCache.ts`, an in-process memo of natural-key -> HubSpot
+     id — once a key resolves once, later calls for it skip search
+     entirely and update the cached id directly, sidestepping the lag.
+   Re-ran the 5-concurrent-call stress test for both contacts and deals
+   after the fix: both now converge on exactly one id. Test records deleted
+   afterward. `tsc`/`npm run build` clean, local server healthy.
+   Remaining before this step is actually done: commit, push, let Render
+   redeploy, then re-verify against the live deployment (ideally with
+   another real order, now that webhook subscriptions exist) that the fix
+   holds in production too.
 9. Business steps: Shopify App Store review (needs a privacy policy — touches
    customer PII), billing/pricing setup. Also, before any real merchant's
    token lands in it: encrypt `shopify_installations.access_token` at rest
