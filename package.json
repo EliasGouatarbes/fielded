@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@hubspot/api-client": "^14.0.1",
+    "@shopify/admin-api-client": "^1.1.2",
     "@shopify/shopify-api": "^13.1.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

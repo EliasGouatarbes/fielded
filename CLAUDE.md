@@ -722,9 +722,23 @@ marketing suite or Stacksync's enterprise-scale sync.
       9e's one-off use of the system's installed Chrome) — low risk since
       this reuses the `.warning` component as-is, already visually verified
       in step 9e for the webhook-warning state.
-    - 10e. Refunds aren't synced (`refunds/create` isn't a subscribed
-      webhook topic) — a refunded order's Deal keeps its original amount/
-      stage unless a merchant hand-writes deal-rules via raw REST calls.
+    - **10e. [PARTIALLY RESOLVED, 2026-07-28]** Refunds aren't synced
+      (`refunds/create` isn't a subscribed webhook topic) — a refunded
+      order's Deal kept its original amount/stage unless a merchant
+      hand-wrote deal-rules via raw REST calls. Researching this led
+      straight into step 11 below (the REST→GraphQL migration) — GraphQL's
+      `currentTotalPriceSet` field reflects the *current*, post-refund
+      total, unlike REST's `total_price` (the original). Now that
+      `src/backfillMerchant.ts` sources orders via GraphQL
+      (`src/shopify/graphqlMapping.ts`'s `mapGraphqlOrder`), a re-run of the
+      backfill picks up any refund that happened since. **Still open**: the
+      live webhook path (`orders/updated` in `src/shopify/webhooks.ts`,
+      unchanged by step 11) still receives Shopify's REST-shaped payload
+      with the original `total_price`, not a current/refunded total — a
+      refund on an already-synced order still won't update that Deal's
+      amount until the next full backfill. Subscribing to `refunds/create`
+      (or re-fetching the order via GraphQL from inside the webhook
+      handler) would close that gap; not done this pass.
     - 10f. No proactive alert if a merchant revokes HubSpot access from
       inside their portal — flagged originally in step 9, still open.
     - 10g. Backfill/sync is fully sequential, no batching — fine at target
@@ -748,6 +762,17 @@ marketing suite or Stacksync's enterprise-scale sync.
     - 10j. No rate limiting anywhere (OAuth routes, webhook receiver,
       `/sync-status`) — acceptable at current scale, worth knowing it's
       absent.
+    - **10k. [FOUND, 2026-07-28, not this app's code]** `npm audit` now
+      reports 5 high-severity findings (`brace-expansion` DoS via unbounded
+      expansion, no fix available), all via `ts-node-dev` → `rimraf` →
+      `glob` → `minimatch` → `brace-expansion`. `ts-node-dev` is a
+      `devDependency` used only by `npm run dev` (local hot-reload) — never
+      in the `npm run build`/`npm start` production path this app actually
+      ships, so real exposure is low, but flagging rather than letting a
+      newly-red `npm audit` go unexplained. Unrelated to step 11's
+      `@shopify/admin-api-client` addition (confirmed via `npm ls` — that
+      package's tree is clean); revisit if `ts-node-dev` ships a fix or a
+      replacement dev-reload tool becomes worth adopting.
 
     Checked and confirmed NOT vulnerable (documented so this isn't
     re-litigated later): SQL injection (parameterized queries throughout),
@@ -756,3 +781,110 @@ marketing suite or Stacksync's enterprise-scale sync.
     `sanitizeShop` enforces a real `*.myshopify.com` domain, verified
     directly in its source), webhook HMAC and OAuth state CSRF protection
     (both timing-safe, state additionally expires after 10 minutes).
+
+11. [DONE, VERIFIED, 2026-07-28] Migrated the Shopify integration from the
+    REST Admin API to the GraphQL Admin API. Discovered mid-audit while
+    researching 10e (refunds): Shopify's own changelog states "starting
+    April 1, 2025, new public apps submitted to the App Store after this
+    date must only use GraphQL" — REST Admin API is legacy for this
+    purpose. This app hasn't been submitted for App Store review yet (see
+    step 9's still-open business step), so it counts as "new" and had to
+    migrate before submission or risk automatic rejection at review.
+    Scope (confirmed by grep — only two files imported the REST transport):
+    `src/shopify/webhookRegistration.ts` (per-shop webhook subscription
+    list/create) and `src/backfillMerchant.ts` (historical customer/order
+    listing). Deliberately untouched: `src/shopify/oauth.ts` (the OAuth
+    token-exchange/HMAC-validation layer isn't Admin API resource access),
+    `src/shopify/webhooks.ts` (the inbound webhook receiver — Shopify
+    delivers webhook payloads in the same shape regardless of how the
+    subscription was registered), `shopify.app.toml`'s
+    `[webhooks.privacy_compliance]` block (confirmed via Shopify docs that
+    the `webhookSubscriptions` GraphQL query only returns shop-scoped
+    subscriptions, not this app-level config — no interaction), and
+    `src/sync.ts` (`syncCustomer`/`syncOrder` and their REST-shaped
+    snake_case interfaces — also used by the unchanged webhook receiver, so
+    a mapping layer translates GraphQL responses into these same shapes
+    rather than changing them). Verified both files are byte-identical via
+    `git diff` after the migration.
+    Added `@shopify/admin-api-client` as a direct dependency (was already
+    present transitively via `@shopify/shopify-api` — it's what that SDK's
+    own `GraphqlClient` wraps internally, and its
+    `createAdminApiClient({storeDomain, apiVersion, accessToken})` factory
+    matches this app's per-merchant-token model — `src/shopify/token.ts`'s
+    `resolveShopifyAccessToken` — with no SDK session/`shopifyApi()`
+    ceremony needed, unlike the SDK's own `GraphqlClient`). Set `retries: 0`
+    on the client deliberately so `src/retry.ts` stays the single source of
+    retry/backoff truth.
+    The core design problem: GraphQL throttling is NOT an HTTP 429 — a
+    throttled request returns HTTP 200 with a body-level
+    `errors.graphQLErrors[].extensions.code === "THROTTLED"`. `src/retry.ts`
+    only ever inspects a thrown error's numeric `.code`/`.statusCode`, with
+    no visibility into a successful response's body. Rather than modifying
+    `retry.ts` (shared with HubSpot calls, has its own passing tests), new
+    `src/shopify/admin-graphql.ts` translates body-level conditions into the
+    same `ShopifyAdminApiError {message, code, headers}` shape retry.ts
+    already expects: a `networkStatusCode >= 500` or a `THROTTLED`
+    `graphQLErrors` entry both become a thrown `ShopifyAdminApiError` (the
+    latter synthesized as `code: 429`, since no `Retry-After` header exists
+    at this layer — falls through to retry.ts's existing exponential
+    backoff); any other GraphQL error becomes a plain `Error` (no `.code` →
+    correctly non-retryable, fails fast, matching how REST 4xx validation
+    errors were already treated). `withRetry` itself needed zero changes —
+    only its top comment was updated for accuracy.
+    New files: `src/shopify/admin-graphql.ts` (`shopifyGraphqlRequest` — the
+    single choke point wrapping every call in `withRetry`;
+    `interpretGraphqlResponse` — the error-translation logic above, exported
+    standalone for testing; `collectPages`/`fetchAllPages` — cursor-based
+    pagination via `pageInfo.hasNextPage`/`endCursor`, replacing REST's
+    `Link`-header-following `nextPath`) and `src/shopify/graphqlMapping.ts`
+    (the `CUSTOMERS_QUERY`/`ORDERS_QUERY` GraphQL query strings and
+    `mapGraphqlCustomer`/`mapGraphqlOrder`, co-located deliberately so field
+    selection and the mapper can't drift apart). Notable field mappings:
+    customer email/phone come from `defaultEmailAddress.emailAddress`/
+    `defaultPhoneNumber.phoneNumber`, not the deprecated flat `email`/`phone`
+    fields (this app targets API version 2026-07, past the 2025-04 version
+    where the replacement became available); order amount comes from
+    `currentTotalPriceSet` (current, post-refund total) rather than
+    `totalPriceSet` (original) — see 10e above.
+    `src/shopify/webhookRegistration.ts` rewritten around
+    `webhookSubscriptions`/`webhookSubscriptionCreate` — one wrinkle caught
+    only by checking Shopify's actual schema docs rather than the first
+    search result: `WebhookSubscriptionInput`'s callback-URL field is named
+    `uri` (a same-named `callbackUrl` field also exists but is deprecated).
+    Extracted the idempotency check (matching existing subscriptions by
+    topic + uri before creating) into a standalone `topicsNeedingRegistration`
+    function purely so it's unit-testable. `src/backfillMerchant.ts` swapped
+    its two REST `fetchAllPages` calls for the GraphQL versions plus
+    mapping; its exported signature is unchanged, so
+    `src/scripts/backfill.ts` and `src/hubspot/oauth.ts`'s callback needed
+    no changes. Deleted `src/shopify/admin-rest.ts` once both call sites
+    were migrated (confirmed by grep it was the only importer of either).
+    Added new unit tests (this trio previously had zero coverage):
+    `admin-graphql.test.ts` (the THROTTLED/5xx/plain-error branches of
+    `interpretGraphqlResponse`, and `collectPages`'s cursor-following against
+    a fake multi-page sequence), `graphqlMapping.test.ts`
+    (`mapGraphqlCustomer`/`mapGraphqlOrder` against full and sparse nodes),
+    `webhookRegistration.test.ts` (`topicsNeedingRegistration` against
+    none/all/partial-overlap existing-subscription scenarios). All 50 tests
+    pass (39 prior + 11 new); `npm run build` clean; a clean `rm -rf dist &&
+    npm run build` confirmed no stray `admin-rest.js` or `.test.js` output.
+    Live-verified against the real dev store
+    (`hubspottest-retveu6u.myshopify.com`), the riskiest assumption first:
+    `npm run register-webhooks -- <shop>` (run with `APP_URL` pointed at the
+    real Render URL, since local `.env` leaves it blank for local dev)
+    correctly recognized all 3 REST-era subscriptions as already registered
+    through the new GraphQL query — logged "already registered" for all
+    three, created none. Independently confirmed via a direct
+    `webhookSubscriptions` query (no topic filter) that exactly 3
+    subscriptions exist afterward, matching by id. Then `npm run backfill --
+    <shop>` reported the same 7 customers / 4 orders as every prior backfill
+    (step 9d), and `sync_log` showed all entries `status: success` with the
+    *same* HubSpot contact/deal ids as before (e.g. order `#1001` still
+    resolved to deal `512948276440`) — proving update-not-duplicate held
+    through the new data source. Spot-checked that deal directly via the
+    HubSpot API: `pipeline: "default"`, `dealstage: "closedwon"`, matching
+    its pre-migration state exactly — confirming the
+    `displayFinancialStatus`/`displayFulfillmentStatus` casing risk flagged
+    during planning didn't silently break deal-rule routing.
+    `npm audit`: unrelated to this change (see 10k above) — confirmed via
+    `npm ls @shopify/admin-api-client` that its dependency tree is clean.

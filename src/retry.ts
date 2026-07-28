@@ -1,12 +1,19 @@
 // Shared retry/backoff for the two APIs this app calls (HubSpot's SDK,
-// Shopify's REST API) — both signal rate limits with HTTP 429, optionally
-// with a Retry-After header, so one generic wrapper covers both rather than
-// each call site rolling its own. Duck-typed rather than `instanceof`
-// checked: HubSpot's `ApiException` class isn't exported from the SDK's
-// package root, and is in fact a distinct class per codegen'd object type
-// (contacts vs deals), so nominal checks would need a separate import per
-// object type for no real benefit — every error shape we care about exposes
-// its HTTP status as a numeric `.code` or `.statusCode`.
+// Shopify's GraphQL Admin API) — both end up signaling rate limits as a
+// numeric `.code`/`.statusCode` of 429, optionally with a Retry-After
+// header, so one generic wrapper covers both rather than each call site
+// rolling its own. For Shopify specifically, a throttled GraphQL request
+// isn't actually an HTTP 429 (it's HTTP 200 with a body-level
+// `errors.graphQLErrors[].extensions.code === "THROTTLED"`) —
+// src/shopify/admin-graphql.ts's `interpretGraphqlResponse` is what
+// translates that into this shape before it ever reaches here, so this
+// file itself only ever deals with the normalized numeric-code form. Duck-
+// typed rather than `instanceof` checked: HubSpot's `ApiException` class
+// isn't exported from the SDK's package root, and is in fact a distinct
+// class per codegen'd object type (contacts vs deals), so nominal checks
+// would need a separate import per object type for no real benefit — every
+// error shape we care about exposes its HTTP status as a numeric `.code`
+// or `.statusCode`.
 
 const RETRYABLE_NODE_ERROR_CODES = new Set([
   'ECONNRESET',

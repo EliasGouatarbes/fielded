@@ -3,10 +3,19 @@
 // OAuth callback can also trigger it directly (in the background) right
 // after a merchant finishes connecting, rather than requiring the
 // developer to run the CLI script by hand for every new install.
-import { config } from './config';
-import { fetchAllPages } from './shopify/admin-rest';
+import { fetchAllPages } from './shopify/admin-graphql';
+import {
+  CUSTOMERS_QUERY,
+  ORDERS_QUERY,
+  mapGraphqlCustomer,
+  mapGraphqlOrder,
+  GraphqlCustomerNode,
+  GraphqlOrderNode,
+  CustomersQueryData,
+  OrdersQueryData,
+} from './shopify/graphqlMapping';
 import { MerchantContext } from './hubspot/tokens';
-import { syncCustomer, syncOrder, ShopifyCustomer, ShopifyOrder } from './sync';
+import { syncCustomer, syncOrder } from './sync';
 
 export interface BackfillResult {
   customerCount: number;
@@ -16,20 +25,28 @@ export interface BackfillResult {
 export async function backfillMerchant(shop: string, merchant: MerchantContext): Promise<BackfillResult> {
   console.log(`Backfilling ${shop}...`);
 
-  const customers = await fetchAllPages<ShopifyCustomer>(
+  const customerNodes = await fetchAllPages<GraphqlCustomerNode, CustomersQueryData>(
     shop,
-    `/admin/api/${config.shopify.apiVersion}/customers.json?limit=250`,
-    'customers'
+    CUSTOMERS_QUERY,
+    (data) => data.customers,
+    {},
+    250,
+    'Shopify backfill customers'
   );
+  const customers = customerNodes.map(mapGraphqlCustomer);
   for (const customer of customers) {
     await syncCustomer(customer, merchant);
   }
 
-  const orders = await fetchAllPages<ShopifyOrder>(
+  const orderNodes = await fetchAllPages<GraphqlOrderNode, OrdersQueryData>(
     shop,
-    `/admin/api/${config.shopify.apiVersion}/orders.json?status=any&limit=250`,
-    'orders'
+    ORDERS_QUERY,
+    (data) => data.orders,
+    { query: 'status:any' },
+    250,
+    'Shopify backfill orders'
   );
+  const orders = orderNodes.map(mapGraphqlOrder);
   for (const order of orders) {
     await syncOrder(order, merchant);
   }
