@@ -367,6 +367,55 @@ marketing suite or Stacksync's enterprise-scale sync.
    (`lead`); a following `orders/create` webhook for the same email moved
    it to `customer`. Test contact/deal deleted afterward.
 
+9d. [DONE, VERIFIED, 2026-07-28] Automatic onboarding — closed a real
+   launch-blocker, not a cosmetic one, found by walking through "what does
+   a merchant actually see after installing?" end to end. Webhook
+   registration (`npm run register-webhooks`) and historical backfill
+   (`npm run backfill`) were both CLI-only scripts, never invoked by the
+   OAuth flow itself — meaning a real merchant self-installing from the
+   App Store would complete both OAuth handshakes successfully and then
+   have literally nothing sync, silently, forever, unless the developer
+   personally SSH'd in and ran both scripts by hand for that shop. Fine
+   for a single dev store operated by hand; not workable for real
+   self-serve installs.
+   Fixed by extracting the reusable core out of each script so both the
+   CLI and the OAuth callback can call it:
+   - `src/shopify/webhookRegistration.ts`'s `registerWebhooksForShop()` —
+     `src/scripts/register-webhooks.ts` is now a thin wrapper around it.
+   - `src/backfillMerchant.ts`'s `backfillMerchant()` —
+     `src/scripts/backfill.ts` is now a thin wrapper around it.
+   `src/hubspot/oauth.ts`'s OAuth callback (the point at which both
+   Shopify and HubSpot are fully connected) now calls
+   `registerWebhooksForShop()` itself — awaited, since it's a handful of
+   fast API calls and its success/failure is worth showing on the success
+   page immediately, not just in server logs — then kicks off
+   `backfillMerchant()` in the background (NOT awaited: blocking the HTTP
+   response on however long a merchant's full order history takes to
+   import would leave them staring at a blank tab). Both are already
+   idempotent (search-before-create throughout), so this is also safe to
+   fire again on a merchant reconnecting HubSpot later for new scopes
+   (exactly what happened earlier this session for the line-items scope).
+   Registration is expected to fail in local dev (`APP_URL` isn't
+   `https://`) — caught and shown as a warning on the success page rather
+   than treated as a broken connection; the callback still explains how to
+   retry it (`npm run register-webhooks -- <shop>`) if it ever fails for
+   a real reason in production.
+   Verified: `npm run build` clean. Couldn't fully exercise the actual
+   OAuth-callback code path without a second real Shopify dev store (a
+   fresh browser install is the only way to hit `/auth/hubspot/callback`
+   for real) — instead verified the two extracted functions directly
+   against the live dev store/HubSpot portal: `registerWebhooksForShop`
+   found all three topics already registered (idempotent, no errors);
+   `backfillMerchant` re-synced the existing 7 customers/4 orders with no
+   duplicates created. The callback's own glue around them (try/catch,
+   `.then/.catch`) is a thin, low-risk wrapper around those two proven
+   functions — full proof of the wiring itself will come from the next
+   real merchant install.
+   **Still not solved by this**: there's still no way for a merchant to
+   regenerate their admin API key if they lose it (minted once, shown
+   once, only its hash stored) — no rotate/reset endpoint exists.
+   Flagged, not built this pass.
+
 9. Business steps: Shopify App Store review (needs a privacy policy — touches
    customer PII), billing/pricing setup.
    [DONE — multi-merchant + configurable deal mapping, 2026-07-25] Per

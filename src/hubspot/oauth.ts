@@ -4,7 +4,9 @@ import { config } from '../config';
 import { getMerchant, saveHubSpotConnection, saveAdminApiKeyHash } from '../db/merchants';
 import { normalizeShopDomain } from '../shopify/token';
 import { createOAuthState, verifyOAuthState } from '../oauthState';
-import { exchangeHubSpotToken, fetchHubSpotPortalId } from './tokens';
+import { exchangeHubSpotToken, fetchHubSpotPortalId, resolveMerchantContext } from './tokens';
+import { registerWebhooksForShop } from '../shopify/webhookRegistration';
+import { backfillMerchant } from '../backfillMerchant';
 
 export const hubspotOAuthRouter = Router();
 
@@ -108,6 +110,34 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
     console.log(`HubSpot portal: ${portalId}`);
     console.log('Tokens saved to the database (merchants table).\n');
 
+    // Previously a CLI-only step (`npm run register-webhooks`) nobody but
+    // the developer could run — a real merchant self-installing from the
+    // App Store would connect successfully and then never actually sync
+    // anything, silently. Awaited (not backgrounded): it's a handful of
+    // fast API calls, and its success/failure is worth surfacing on this
+    // page immediately rather than only in server logs. Expected to fail
+    // in local dev (APP_URL isn't https://) — caught rather than treated
+    // as a broken connection.
+    let webhookStatusHtml: string;
+    try {
+      await registerWebhooksForShop(shop);
+      webhookStatusHtml = '<p>Shopify webhooks registered — new orders and customers will sync automatically.</p>';
+    } catch (err) {
+      console.error(`Failed to auto-register webhooks for ${shop}:`, err);
+      webhookStatusHtml =
+        '<p><strong>Warning:</strong> automatic webhook registration failed — new orders won\'t sync yet. ' +
+        `Retry with <code>npm run register-webhooks -- ${shop}</code>, or contact support.</p>`;
+    }
+
+    // Historical import runs in the background, not awaited — blocking
+    // this response on it would leave the merchant staring at a blank
+    // browser tab for however long their order history takes to import.
+    // Errors are only logged/visible via /sync-status, same as any other
+    // sync failure; re-running `npm run backfill` is safe if needed.
+    resolveMerchantContext(shop)
+      .then((ctx) => (ctx ? backfillMerchant(shop, ctx) : undefined))
+      .catch((err) => console.error(`Background historical backfill failed for ${shop}:`, err));
+
     // Generated once, on first-ever HubSpot connect for this shop — shown
     // exactly once here, never retrievable again (only its hash is stored).
     let newKeyHtml = '';
@@ -125,6 +155,9 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
     res.type('html').send(
       `<h1>HubSpot OAuth complete</h1>` +
         `<p>Connected <strong>${shop}</strong> to HubSpot portal <strong>${portalId}</strong>.</p>` +
+        webhookStatusHtml +
+        `<p>Importing your existing customers and orders now — this runs in the background and can take a ` +
+        `few minutes depending on how much history you have.</p>` +
         newKeyHtml
     );
   } catch (err) {
