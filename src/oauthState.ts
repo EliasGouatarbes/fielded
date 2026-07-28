@@ -11,16 +11,26 @@ import { config } from './config';
 // not a separate trusted query param.
 const STATE_TTL_MS = 10 * 60 * 1000;
 
-export function createOAuthState(shop: string): string {
+export interface OAuthStatePayload {
+  shop: string;
+  // Only meaningful for the HubSpot flow (src/hubspot/oauth.ts) — carries a
+  // merchant's explicit request to mint a replacement admin API key on this
+  // reconnect, since completing the HubSpot handshake is itself the proof of
+  // identity this app has for that merchant (no separate account/password
+  // system exists to gate a dedicated "reset my key" endpoint on).
+  regenerateAdminKey: boolean;
+}
+
+export function createOAuthState(shop: string, opts?: { regenerateAdminKey?: boolean }): string {
   const nonce = crypto.randomBytes(8).toString('hex');
-  const payload = `${shop}:${nonce}:${Date.now()}`;
+  const payload = `${shop}:${nonce}:${Date.now()}:${opts?.regenerateAdminKey ? '1' : '0'}`;
   const signature = crypto.createHmac('sha256', config.oauthStateSecret).update(payload).digest('hex');
   return `${Buffer.from(payload, 'utf8').toString('base64url')}.${signature}`;
 }
 
-// Returns the shop domain the state was signed for, or throws if the
-// signature is invalid or the state has expired.
-export function verifyOAuthState(state: string): string {
+// Returns the payload the state was signed for, or throws if the signature
+// is invalid or the state has expired.
+export function verifyOAuthState(state: string): OAuthStatePayload {
   const [encodedPayload, signature] = state.split('.');
   if (!encodedPayload || !signature) {
     throw new Error('Malformed OAuth state.');
@@ -35,11 +45,11 @@ export function verifyOAuthState(state: string): string {
     throw new Error('Invalid OAuth state signature.');
   }
 
-  const [shop, , timestampStr] = payload.split(':');
+  const [shop, , timestampStr, regenerateFlag] = payload.split(':');
   const timestamp = Number(timestampStr);
   if (!shop || !timestamp || Date.now() - timestamp > STATE_TTL_MS) {
     throw new Error('OAuth state expired. Restart the flow.');
   }
 
-  return shop;
+  return { shop, regenerateAdminKey: regenerateFlag === '1' };
 }

@@ -114,7 +114,7 @@ shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
 
   let stateShop: string;
   try {
-    stateShop = verifyOAuthState(state);
+    stateShop = verifyOAuthState(state).shop;
   } catch (err) {
     res
       .status(403)

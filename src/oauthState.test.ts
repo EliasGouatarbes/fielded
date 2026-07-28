@@ -6,7 +6,13 @@ import { config } from './config';
 
 test('verifyOAuthState returns the shop a valid state was created for', () => {
   const state = createOAuthState('example-store.myshopify.com');
-  assert.equal(verifyOAuthState(state), 'example-store.myshopify.com');
+  assert.equal(verifyOAuthState(state).shop, 'example-store.myshopify.com');
+  assert.equal(verifyOAuthState(state).regenerateAdminKey, false);
+});
+
+test('verifyOAuthState carries the regenerateAdminKey flag through', () => {
+  const state = createOAuthState('example-store.myshopify.com', { regenerateAdminKey: true });
+  assert.equal(verifyOAuthState(state).regenerateAdminKey, true);
 });
 
 test('verifyOAuthState rejects a tampered signature', () => {
@@ -32,6 +38,6 @@ test('verifyOAuthState rejects an expired state', () => {
 
 test('verifyOAuthState rejects a state signed with a different shop embedded', () => {
   const stateForShopA = createOAuthState('shop-a.myshopify.com');
-  assert.equal(verifyOAuthState(stateForShopA), 'shop-a.myshopify.com');
-  assert.notEqual(verifyOAuthState(stateForShopA), 'shop-b.myshopify.com');
+  assert.equal(verifyOAuthState(stateForShopA).shop, 'shop-a.myshopify.com');
+  assert.notEqual(verifyOAuthState(stateForShopA).shop, 'shop-b.myshopify.com');
 });

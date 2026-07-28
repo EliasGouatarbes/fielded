@@ -46,7 +46,12 @@ hubspotOAuthRouter.get('/auth/hubspot', async (req, res) => {
     return;
   }
 
-  const state = createOAuthState(shop);
+  // ?regenerate_key=1 is the recovery path for a merchant who lost their
+  // admin API key (src/oauthState.ts) — completing this real HubSpot login
+  // is the only proof of identity this app has for them, since there's no
+  // separate account/password system to gate a dedicated reset endpoint on.
+  const regenerateAdminKey = req.query.regenerate_key === '1';
+  const state = createOAuthState(shop, { regenerateAdminKey });
   const redirectUri = `${config.server.appUrl}${OAUTH_CALLBACK_PATH}`;
 
   const authorizeUrl = new URL('https://app.hubspot.com/oauth/authorize');
@@ -82,8 +87,9 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
   }
 
   let shop: string;
+  let regenerateAdminKey: boolean;
   try {
-    shop = verifyOAuthState(state);
+    ({ shop, regenerateAdminKey } = verifyOAuthState(state));
   } catch (err) {
     res
       .status(403)
@@ -147,20 +153,30 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
       .then((ctx) => (ctx ? backfillMerchant(shop, ctx) : undefined))
       .catch((err) => console.error(`Background historical backfill failed for ${shop}:`, err));
 
-    // Generated once, on first-ever HubSpot connect for this shop — shown
-    // exactly once here, never retrievable again (only its hash is stored).
+    // Generated on first-ever HubSpot connect for this shop, or again on a
+    // reconnect with ?regenerate_key=1 (the recovery path for a merchant who
+    // lost theirs — there's no other way back in, since only the hash is
+    // ever stored). Shown exactly once here, never retrievable again.
     let advancedHtml = '';
-    if (!merchant.adminApiKeyHash) {
+    if (!merchant.adminApiKeyHash || regenerateAdminKey) {
       const key = crypto.randomBytes(24).toString('hex');
       await saveAdminApiKeyHash(shop, hashAdminApiKey(key));
+      const regeneratedNote = regenerateAdminKey
+        ? '<p>This replaces your previous key — that one no longer works.</p>'
+        : '';
       advancedHtml = `
         <hr>
         <p class="muted"><strong>Optional, for later:</strong> nothing below is required to make syncing work — it's only
         needed if you ever want to check sync status yourself or customize which HubSpot pipeline/stage orders land in.</p>
-        <p class="muted">Save this key now — it's shown only this once:</p>
-        <pre>${key}</pre>
+        <div class="warning">
+          <p><strong>Save this key now — it will not be shown again:</strong></p>
+          <pre>${key}</pre>
+          ${regeneratedNote}
+        </div>
         <p class="muted">Check sync status any time with:</p>
-        <pre>curl -H "Authorization: Bearer ${key}" "${config.server.appUrl}/sync-status?shop=${encodeURIComponent(shop)}"</pre>`;
+        <pre>curl -H "Authorization: Bearer ${key}" "${config.server.appUrl}/sync-status?shop=${encodeURIComponent(shop)}"</pre>
+        <p class="muted">Lost this key later? Reconnect HubSpot at
+        <code>${config.server.appUrl}/auth/hubspot?shop=${encodeURIComponent(shop)}&regenerate_key=1</code> to get a new one.</p>`;
     }
 
     const webhookChecklistItem = webhooksRegistered

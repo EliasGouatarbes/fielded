@@ -676,8 +676,52 @@ marketing suite or Stacksync's enterprise-scale sync.
       ~1.7s total. Added `src/**/*.test.ts` to `tsconfig.json`'s `exclude`
       and confirmed a clean `npm run build` produces zero `.test.js` files
       in `dist/`.
-    - 10d. No way to regenerate a lost admin API key (minted once, shown
-      once, no reset endpoint) — flagged originally in step 9.
+    - **10d. [DONE, VERIFIED, 2026-07-28]** No way to regenerate a lost admin
+      API key (minted once, shown once, no reset endpoint) — flagged
+      originally in step 9.
+      Fixed without adding a new auth system: a merchant can now reconnect
+      HubSpot with `?regenerate_key=1` (e.g. `/auth/hubspot?shop=<domain>
+      &regenerate_key=1`) to force a fresh key, since completing that real
+      HubSpot OAuth login is already the strongest proof of identity this
+      app has for a merchant — no separate account/password exists to gate
+      a dedicated reset endpoint on.
+      `src/oauthState.ts`'s `createOAuthState`/`verifyOAuthState` now
+      carry/return a `regenerateAdminKey` flag as a 4th colon-delimited
+      field in the signed state payload (harmless to the Shopify OAuth flow,
+      which also uses this shared module but ignores the flag — updated its
+      call site in `src/shopify/oauth.ts` for the new `{shop, ...}` return
+      shape). `src/hubspot/oauth.ts`'s `/auth/hubspot` route reads
+      `?regenerate_key=1` and threads it into the state; the callback now
+      mints and overwrites the stored key hash whenever
+      `!merchant.adminApiKeyHash || regenerateAdminKey`, not just on first
+      connect, and the onboarding page's "optional, for later" block now
+      documents this recovery path inline so it isn't only discoverable by
+      reading source.
+      Verified: `npm run build` clean; extended `src/oauthState.test.ts`
+      with a case asserting the flag round-trips through
+      create/verifyOAuthState, plus updated the existing cases for the new
+      `{shop, regenerateAdminKey}` return shape (was a bare string) — all
+      35 tests pass (34 prior + 1 new). Not re-tested against the live dev
+      store this pass (would mint a real replacement key for the one
+      already-connected merchant, invalidating whatever key is currently in
+      use there) — logic covered by the unit tests above instead.
+      **Follow-up caught by user review**: the "save this key now" notice
+      was the only channel a merchant ever sees it through (no email, no
+      other delivery), yet was styled `class="muted"` — small gray text,
+      the same de-emphasized style used for throwaway asides like "optional,
+      for later." Meanwhile this same page already had a `.warning` class
+      (bordered, amber) reserved for the webhook-registration-failure case —
+      so a failed webhook was visually louder than a one-time secret that
+      (pre-this-fix) was unrecoverable if missed. Fixed by wrapping the key
+      + regenerated-key note in `.warning` instead of `.muted` in
+      `src/hubspot/oauth.ts`; left the surrounding "optional, for later"
+      framing and the curl-example/regenerate-instructions paragraphs as
+      `.muted`, since those genuinely are lower-priority. `npm run build`
+      and all 35 tests still pass. Not re-verified with an actual browser
+      screenshot this pass (no Playwright dependency in this repo, per step
+      9e's one-off use of the system's installed Chrome) — low risk since
+      this reuses the `.warning` component as-is, already visually verified
+      in step 9e for the webhook-warning state.
     - 10e. Refunds aren't synced (`refunds/create` isn't a subscribed
       webhook topic) — a refunded order's Deal keeps its original amount/
       stage unless a merchant hand-writes deal-rules via raw REST calls.
