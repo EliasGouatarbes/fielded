@@ -16,11 +16,17 @@ import {
 } from './shopify/graphqlMapping';
 import { MerchantContext } from './hubspot/tokens';
 import { syncCustomer, syncOrder } from './sync';
+import { mapWithConcurrency } from './concurrency';
 
 export interface BackfillResult {
   customerCount: number;
   orderCount: number;
 }
+
+// Matches the concurrency level this app's own contact/deal upsert path was
+// already stress-tested against (CLAUDE.md step 8's 5-concurrent-call
+// test) — not chosen arbitrarily.
+const BACKFILL_CONCURRENCY = 5;
 
 export async function backfillMerchant(shop: string, merchant: MerchantContext): Promise<BackfillResult> {
   console.log(`Backfilling ${shop}...`);
@@ -34,9 +40,7 @@ export async function backfillMerchant(shop: string, merchant: MerchantContext):
     'Shopify backfill customers'
   );
   const customers = customerNodes.map(mapGraphqlCustomer);
-  for (const customer of customers) {
-    await syncCustomer(customer, merchant);
-  }
+  await mapWithConcurrency(customers, BACKFILL_CONCURRENCY, (customer) => syncCustomer(customer, merchant));
 
   const orderNodes = await fetchAllPages<GraphqlOrderNode, OrdersQueryData>(
     shop,
@@ -47,9 +51,7 @@ export async function backfillMerchant(shop: string, merchant: MerchantContext):
     'Shopify backfill orders'
   );
   const orders = orderNodes.map(mapGraphqlOrder);
-  for (const order of orders) {
-    await syncOrder(order, merchant);
-  }
+  await mapWithConcurrency(orders, BACKFILL_CONCURRENCY, (order) => syncOrder(order, merchant));
 
   console.log(`Backfill complete for ${shop}: ${customers.length} customer(s), ${orders.length} order(s).`);
   return { customerCount: customers.length, orderCount: orders.length };

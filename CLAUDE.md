@@ -864,9 +864,48 @@ marketing suite or Stacksync's enterprise-scale sync.
       email/Slack alert. The DB flag + `/sync-status` field are the
       "proactive" mechanism for now; revisit if/when this app gets real
       notification infrastructure for other reasons.
-    - 10g. Backfill/sync is fully sequential, no batching — fine at target
-      scale (tens–hundreds of orders/month), would be slow for a merchant
-      with a large historical order count.
+    - **10g. [DONE, VERIFIED, 2026-07-28]** Backfill/sync was fully
+      sequential, no batching — fine at target scale (tens–hundreds of
+      orders/month), would be slow for a merchant with a large historical
+      order count. Scoped deliberately before building: "batching" could
+      mean HubSpot's actual batch create/update endpoints, but those don't
+      support the search-then-create pattern this app's whole upsert
+      architecture is built on (`upsertContactByEmail`/`upsertDealByName`)
+      — reworking that would be a much larger refactor for a scale problem
+      this app doesn't actually have yet. User chose the smaller, safe fix:
+      bounded concurrency instead of true batching.
+      New `src/concurrency.ts`'s `mapWithConcurrency(items, concurrency, fn)`
+      — a generic worker-pool helper, order-preserving, independently
+      testable without touching HubSpot/DB. `src/backfillMerchant.ts` now
+      runs both the customer and order sync loops through it at
+      `BACKFILL_CONCURRENCY = 5` — not an arbitrary number: it matches the
+      exact concurrency level this app's contact/deal upsert path was
+      already stress-tested against in step 8 (5 simultaneous webhook
+      deliveries converging on one record each, zero duplicates). Safe by
+      construction: `src/mutex.ts`'s `withKeyedLock` only serializes calls
+      sharing the same natural key (email/dealname) — distinct
+      customers/orders in the same concurrent batch never contend with
+      each other, so running them in parallel doesn't reintroduce the
+      search-index-lag race step 8 fixed.
+      New `src/concurrency.test.ts`: order preservation, the concurrency
+      cap is actually respected (tracked via an in-flight counter), empty
+      input, concurrency higher than item count, and that one item's
+      rejection still propagates (matching the previous sequential loop's
+      failure behavior) rather than being silently swallowed. All 62 tests
+      pass (57 prior + 5 new); clean build.
+      Live-verified against the real dev store: re-ran `npm run backfill --
+      hubspottest-retveu6u.myshopify.com` and confirmed via `sync_log`
+      timestamps that orders/customers now land in tight concurrent bursts
+      (5 orders within ~28ms of each other, vs. the previous ~300–600ms
+      sequential gaps) — genuine parallelism, not just faster sequential
+      calls. Every repeat customer/order still resolved to its exact same
+      existing HubSpot id (e.g. `#1001` → `512948276440`,
+      `boss@gmail.com` → `830220497120`) — update-not-duplicate held under
+      concurrency, all entries `status: success`.
+      **Not done, by explicit scope choice**: real HubSpot Batch API
+      integration. Revisit only if a merchant's actual historical order
+      count grows large enough that 5x-parallel sequential calls are still
+      too slow — nothing this pass forecloses that later.
 
     Security findings, not yet fixed:
     - 10h. Postgres connection disables TLS certificate verification
