@@ -33,6 +33,15 @@ app.get('/health', async (_req, res) => {
 
   res.json({
     status: 'ok',
+    // RENDER_GIT_COMMIT is set automatically by Render itself on every
+    // deploy — reading it (rather than maintaining a hand-bumped version
+    // string) means this always reflects exactly what Render actually
+    // built, with zero chance of drifting out of sync. Undefined outside
+    // Render (e.g. local dev). Compare against `git rev-parse HEAD`/
+    // `git log` to confirm a given deploy actually picked up a push.
+    version: {
+      gitCommit: process.env.RENDER_GIT_COMMIT ?? null,
+    },
     shopify: {
       storeDomain: config.shopify.storeDomain,
       apiVersion: config.shopify.apiVersion,
