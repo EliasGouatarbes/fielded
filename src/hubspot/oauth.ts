@@ -7,6 +7,7 @@ import { createOAuthState, verifyOAuthState } from '../oauthState';
 import { exchangeHubSpotToken, fetchHubSpotPortalId, resolveMerchantContext } from './tokens';
 import { registerWebhooksForShop } from '../shopify/webhookRegistration';
 import { backfillMerchant } from '../backfillMerchant';
+import { renderPage, renderErrorPage } from '../htmlPage';
 
 export const hubspotOAuthRouter = Router();
 
@@ -31,14 +32,17 @@ export function hashAdminApiKey(key: string): string {
 hubspotOAuthRouter.get('/auth/hubspot', async (req, res) => {
   const shopParam = req.query.shop;
   if (typeof shopParam !== 'string' || !shopParam) {
-    res.status(400).send('Missing "shop" query parameter.');
+    res.status(400).type('html').send(renderErrorPage('Missing "shop" query parameter.'));
     return;
   }
   const shop = normalizeShopDomain(shopParam);
 
   const merchant = await getMerchant(shop);
   if (!merchant) {
-    res.status(400).send(`No Shopify installation found for ${shop}. Install via /auth/shopify first.`);
+    res
+      .status(400)
+      .type('html')
+      .send(renderErrorPage(`No Shopify installation found for ${shop}. Install via /auth/shopify first.`));
     return;
   }
 
@@ -63,12 +67,17 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
   // generic "missing parameters" message below, which was indistinguishable
   // from an actual client bug.
   if (typeof error === 'string') {
-    res.status(400).send(`HubSpot rejected the connection: ${error}${errorDescription ? ` — ${errorDescription}` : ''}`);
+    res
+      .status(400)
+      .type('html')
+      .send(
+        renderErrorPage(`HubSpot rejected the connection: ${error}${errorDescription ? ` — ${errorDescription}` : ''}`)
+      );
     return;
   }
 
   if (typeof code !== 'string' || typeof state !== 'string') {
-    res.status(400).send('Missing required OAuth query parameters.');
+    res.status(400).type('html').send(renderErrorPage('Missing required OAuth query parameters.'));
     return;
   }
 
@@ -76,13 +85,16 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
   try {
     shop = verifyOAuthState(state);
   } catch (err) {
-    res.status(403).send(`OAuth state invalid: ${err instanceof Error ? err.message : String(err)}`);
+    res
+      .status(403)
+      .type('html')
+      .send(renderErrorPage(`OAuth state invalid: ${err instanceof Error ? err.message : String(err)}`));
     return;
   }
 
   const merchant = await getMerchant(shop);
   if (!merchant) {
-    res.status(400).send(`No Shopify installation found for ${shop}.`);
+    res.status(400).type('html').send(renderErrorPage(`No Shopify installation found for ${shop}.`));
     return;
   }
 
@@ -118,15 +130,12 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
     // page immediately rather than only in server logs. Expected to fail
     // in local dev (APP_URL isn't https://) — caught rather than treated
     // as a broken connection.
-    let webhookStatusHtml: string;
+    let webhooksRegistered = true;
     try {
       await registerWebhooksForShop(shop);
-      webhookStatusHtml = '<p>Shopify webhooks registered — new orders and customers will sync automatically.</p>';
     } catch (err) {
+      webhooksRegistered = false;
       console.error(`Failed to auto-register webhooks for ${shop}:`, err);
-      webhookStatusHtml =
-        '<p><strong>Warning:</strong> automatic webhook registration failed — new orders won\'t sync yet. ' +
-        `Retry with <code>npm run register-webhooks -- ${shop}</code>, or contact support.</p>`;
     }
 
     // Historical import runs in the background, not awaited — blocking
@@ -140,28 +149,55 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
 
     // Generated once, on first-ever HubSpot connect for this shop — shown
     // exactly once here, never retrievable again (only its hash is stored).
-    let newKeyHtml = '';
+    let advancedHtml = '';
     if (!merchant.adminApiKeyHash) {
       const key = crypto.randomBytes(24).toString('hex');
       await saveAdminApiKeyHash(shop, hashAdminApiKey(key));
-      newKeyHtml =
-        `<p><strong>Your admin API key (shown once, save it now):</strong></p>` +
-        `<pre>${key}</pre>` +
-        `<p>Use it as <code>Authorization: Bearer ${key}</code> against ` +
-        `<code>/sync-status?shop=${encodeURIComponent(shop)}</code> and ` +
-        `<code>/merchants/${encodeURIComponent(shop)}/deal-rules</code>.</p>`;
+      advancedHtml = `
+        <hr>
+        <p class="muted"><strong>Optional, for later:</strong> nothing below is required to make syncing work — it's only
+        needed if you ever want to check sync status yourself or customize which HubSpot pipeline/stage orders land in.</p>
+        <p class="muted">Save this key now — it's shown only this once:</p>
+        <pre>${key}</pre>
+        <p class="muted">Check sync status any time with:</p>
+        <pre>curl -H "Authorization: Bearer ${key}" "${config.server.appUrl}/sync-status?shop=${encodeURIComponent(shop)}"</pre>`;
     }
 
+    const webhookChecklistItem = webhooksRegistered
+      ? '<li>✅ Webhooks registered — new orders and customers will sync automatically</li>'
+      : '<li>⚠️ Webhook registration failed — see warning below</li>';
+
+    const webhookWarningHtml = webhooksRegistered
+      ? ''
+      : `<div class="warning"><strong>Heads up:</strong> automatic webhook registration failed, so new orders
+        won't sync yet. Retry with <code>npm run register-webhooks -- ${shop}</code>, or contact support.</div>`;
+
+    const headline = webhooksRegistered ? "Step 2 of 2 &mdash; You're all set 🎉" : 'Step 2 of 2 &mdash; Almost there';
+
     res.type('html').send(
-      `<h1>HubSpot OAuth complete</h1>` +
-        `<p>Connected <strong>${shop}</strong> to HubSpot portal <strong>${portalId}</strong>.</p>` +
-        webhookStatusHtml +
-        `<p>Importing your existing customers and orders now — this runs in the background and can take a ` +
-        `few minutes depending on how much history you have.</p>` +
-        newKeyHtml
+      renderPage(
+        'HubSpot connected',
+        `<h1>${headline}</h1>
+        <p><strong>${shop}</strong> is connected to HubSpot portal <strong>${portalId}</strong>.</p>
+        <ul class="checklist">
+          <li>✅ Shopify connected</li>
+          <li>✅ HubSpot connected</li>
+          ${webhookChecklistItem}
+          <li>⏳ Importing your existing customers and orders (running now, in the background)</li>
+        </ul>
+        ${webhookWarningHtml}
+        <p>From here, nothing else is required. New Shopify orders and customers will appear in HubSpot automatically
+        as <strong>Contacts</strong> and <strong>Deals</strong> — not HubSpot's native Orders object, so your existing
+        pipelines, lists, and reports keep working. Historical import can take a few minutes depending on how much
+        order history this store has.</p>
+        ${advancedHtml}`
+      )
     );
   } catch (err) {
     console.error('HubSpot token exchange failed:', err);
-    res.status(502).send('Failed to exchange authorization code for a HubSpot access token. Check server logs.');
+    res
+      .status(502)
+      .type('html')
+      .send(renderErrorPage('Failed to exchange the authorization code for a HubSpot access token. Check server logs.'));
   }
 });

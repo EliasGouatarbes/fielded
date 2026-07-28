@@ -416,6 +416,45 @@ marketing suite or Stacksync's enterprise-scale sync.
    once, only its hash stored) — no rotate/reset endpoint exists.
    Flagged, not built this pass.
 
+9e. [DONE, VERIFIED, 2026-07-28] Onboarding page redesign. Both OAuth
+   callback pages (`src/shopify/oauth.ts`, `src/hubspot/oauth.ts`) were
+   bare unstyled `<h1>` text — the only UI a merchant ever sees, and the
+   thing most directly responsible for whether they trust the app enough
+   to keep going. New `src/htmlPage.ts`: dependency-free `renderPage()`/
+   `renderErrorPage()` (inline CSS, light+dark via
+   `prefers-color-scheme`, no client JS/external assets — this renders a
+   handful of times per merchant, so a build step or framework would be
+   pure overhead). Applied to every user-facing response in both OAuth
+   routers, success and error paths alike (webhook/backfill errors, which
+   merchants never see, were left as-is).
+   Content changes, not just styling: the Shopify-connected page is now
+   explicitly labeled "Step 1 of 2" with a clear next action; the
+   HubSpot-connected page (the real "you're done" moment) is a checklist —
+   Shopify ✅, HubSpot ✅, webhooks ✅/⚠️, historical import ⏳ — plus a
+   plain-English "what happens now, you don't need to do anything else"
+   paragraph that also states the Deals-not-Orders distinction (the whole
+   premise of this app) so a merchant immediately sees why this isn't just
+   HubSpot's own broken integration again. The one-time admin-key block is
+   now explicitly framed "optional, for later" with a ready-to-copy `curl`
+   command instead of just a bare key + prose explanation. When webhook
+   registration fails, the headline itself changes ("Almost there" instead
+   of "You're all set") rather than claiming success next to a warning box.
+   Verified visually, not just by reading the HTML: rendered the actual
+   `renderPage`/`renderErrorPage` output for all four states (Shopify
+   connected, HubSpot connected success, HubSpot connected with a webhook
+   warning, a generic error page) to static files and screenshotted them
+   with Playwright driving the system's installed Chrome (no browser
+   binary download needed) — checked both light and dark rendering.
+   Caught and fixed one real issue this way: the warning-state page
+   originally still read "You're all set 🎉" right above the warning box,
+   undercutting it — text-only review wouldn't have surfaced how off that
+   looked next to the actual warning styling.
+   **Deliberately still out of scope**: an ongoing settings/status
+   dashboard. Per the multi-merchant design doc (step 9), that needs a
+   real auth model beyond a bearer key and was already deferred once for
+   that reason — these onboarding pages are the "first impression," not a
+   replacement for that decision.
+
 9. Business steps: Shopify App Store review (needs a privacy policy — touches
    customer PII), billing/pricing setup.
    [DONE — multi-merchant + configurable deal mapping, 2026-07-25] Per

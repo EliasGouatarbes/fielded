@@ -6,6 +6,7 @@ import { config } from '../config';
 import { saveShopifyToken } from '../db/merchants';
 import { normalizeShopDomain } from './token';
 import { createOAuthState, verifyOAuthState } from '../oauthState';
+import { renderPage, renderErrorPage } from '../htmlPage';
 
 // Also used by server.ts's /health check (sdkLoaded) and by the utils
 // helpers below during the handshake.
@@ -82,7 +83,7 @@ shopifyOAuthRouter.get('/auth/shopify', (req, res) => {
   try {
     shop = shopify.utils.sanitizeShop(requestedShop, true)!;
   } catch {
-    res.status(400).send('Invalid or missing "shop" domain.');
+    res.status(400).type('html').send(renderErrorPage('That doesn\'t look like a valid Shopify store domain.'));
     return;
   }
 
@@ -107,7 +108,7 @@ shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
     typeof state !== 'string' ||
     typeof hmac !== 'string'
   ) {
-    res.status(400).send('Missing required OAuth query parameters.');
+    res.status(400).type('html').send(renderErrorPage('Missing required OAuth query parameters.'));
     return;
   }
 
@@ -115,11 +116,14 @@ shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
   try {
     stateShop = verifyOAuthState(state);
   } catch (err) {
-    res.status(403).send(`OAuth state invalid: ${err instanceof Error ? err.message : String(err)}`);
+    res
+      .status(403)
+      .type('html')
+      .send(renderErrorPage(`OAuth state invalid: ${err instanceof Error ? err.message : String(err)}`));
     return;
   }
   if (normalizeShopDomain(stateShop) !== normalizeShopDomain(shop)) {
-    res.status(403).send('OAuth state shop mismatch.');
+    res.status(403).type('html').send(renderErrorPage('OAuth state shop mismatch.'));
     return;
   }
 
@@ -128,11 +132,11 @@ shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
     cleanShop = shopify.utils.sanitizeShop(shop, true)!;
     const validHmac = await shopify.utils.validateHmac(req.query as Record<string, string>);
     if (!validHmac) {
-      res.status(403).send('Invalid HMAC signature.');
+      res.status(403).type('html').send(renderErrorPage('Invalid HMAC signature.'));
       return;
     }
   } catch {
-    res.status(403).send('OAuth validation failed.');
+    res.status(403).type('html').send(renderErrorPage('OAuth validation failed.'));
     return;
   }
 
@@ -145,14 +149,21 @@ shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
     console.log(`Scopes granted: ${scope}`);
     console.log('Access token saved to the database (merchants table).\n');
 
+    const hubspotConnectUrl = `/auth/hubspot?shop=${encodeURIComponent(normalizeShopDomain(cleanShop))}`;
     res.type('html').send(
-      `<h1>Shopify OAuth complete</h1>` +
-        `<p>Access token minted for <strong>${cleanShop}</strong> and saved to the database — ` +
-        `nothing to copy into <code>.env</code>.</p>` +
-        `<p><a href="/auth/hubspot?shop=${encodeURIComponent(normalizeShopDomain(cleanShop))}">Connect HubSpot &rarr;</a></p>`
+      renderPage(
+        'Shopify connected',
+        `<h1>Step 1 of 2 &mdash; Shopify connected ✅</h1>
+        <p><strong>${cleanShop}</strong> is linked. Nothing to copy into any config file — the access token is saved automatically.</p>
+        <p>One step left before anything syncs: tell us which HubSpot account this store's contacts and orders should land in.</p>
+        <a class="btn" href="${hubspotConnectUrl}">Connect HubSpot &rarr;</a>`
+      )
     );
   } catch (err) {
     console.error('Shopify token exchange failed:', err);
-    res.status(502).send('Failed to exchange authorization code for an access token. Check server logs.');
+    res
+      .status(502)
+      .type('html')
+      .send(renderErrorPage('Failed to exchange the authorization code for an access token. Check server logs.'));
   }
 });
