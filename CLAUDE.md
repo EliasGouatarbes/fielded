@@ -653,10 +653,29 @@ marketing suite or Stacksync's enterprise-scale sync.
       deletes the merchant row within Shopify's guaranteed 48-hour window,
       which resolves the practical impact even without a dedicated
       `app/uninstalled` handler.
-    - 10c. No automated test suite — every guarantee in this app (retry/
-      backoff, concurrent-webhook dedup, deal-rule evaluation, encryption
-      round-tripping) is proven only by manual live testing against the one
-      real dev store, not by anything that would catch a future regression.
+    - **10c. [DONE, VERIFIED, 2026-07-28]** No automated test suite —
+      every guarantee in this app (retry/backoff, concurrent-webhook dedup,
+      deal-rule evaluation, encryption round-tripping) was proven only by
+      manual live testing against the one real dev store, not by anything
+      that would catch a future regression.
+      Fixed with Node's built-in test runner (`node:test` + `node:assert`)
+      — zero new dependencies, matching this app's existing minimal-deps
+      philosophy. `npm test` runs
+      `node --require ts-node/register/transpile-only --test "src/**/*.test.ts"`;
+      confirmed Node's test runner does its own glob matching (quoted the
+      pattern and it still worked), not relying on shell expansion — matters
+      since `npm run test` may execute under `cmd.exe` on this Windows
+      machine, which doesn't glob-expand `*` the way bash does.
+      34 tests across `src/crypto.test.ts`, `src/oauthState.test.ts`,
+      `src/mutex.test.ts`, `src/retry.test.ts`,
+      `src/hubspot/dealRules.test.ts`, `src/hubspot/conflict.test.ts` — the
+      pure, dependency-free logic, not anything needing a live HubSpot/
+      Shopify/DB connection (that's what this session's extensive live
+      testing already covers, and mocking those SDKs is a much bigger,
+      lower-value undertaking than this pass called for). All 34 pass,
+      ~1.7s total. Added `src/**/*.test.ts` to `tsconfig.json`'s `exclude`
+      and confirmed a clean `npm run build` produces zero `.test.js` files
+      in `dist/`.
     - 10d. No way to regenerate a lost admin API key (minted once, shown
       once, no reset endpoint) — flagged originally in step 9.
     - 10e. Refunds aren't synced (`refunds/create` isn't a subscribed
