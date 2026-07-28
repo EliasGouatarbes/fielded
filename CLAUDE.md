@@ -592,3 +592,104 @@ marketing suite or Stacksync's enterprise-scale sync.
    Environment tab (same value as local `.env`, per the sharp edge above)
    before the next deploy — the running production instance is still
    reading plaintext until that env var lands there and it redeploys.
+
+10. [IN PROGRESS] Pre-launch audit (2026-07-28). Full functional +
+    security review of the entire codebase, done at explicit user request
+    ("go through everything thoroughly... report back once you are
+    absolutely sure") before preparing to go live. Confirmed the three
+    original bugs (order searchability, address field mapping, Deals not
+    Orders) are genuinely fixed in code, `npm audit` shows 0 vulnerabilities,
+    and `.env` was never committed (checked full git history, not just the
+    current `.gitignore`). Working through the findings below one at a time,
+    starting with 10a.
+
+    Functional gaps found:
+    - **10a. [DONE, VERIFIED, 2026-07-28] Blocking for Shopify App Store
+      approval**: none of Shopify's three mandatory GDPR compliance
+      webhooks (`customers/data_request`, `customers/redact`,
+      `shop/redact`) were implemented. Every public Shopify app must handle
+      these regardless of what data it stores; app review checks for them.
+      Fixed in `src/shopify/webhooks.ts`, bypassing `resolveMerchantOrRespond`
+      (these must keep working even for a shop with no live HubSpot
+      connection, or already fully uninstalled):
+      - `customers/data_request`: this app holds no customer data beyond
+        `sync_log` rows and whatever's already synced into the merchant's
+        own HubSpot portal (that merchant's data as controller there, not
+        this app's to hand over directly) — logs the request so it isn't
+        silently lost; fulfilling it is a manual step.
+      - `customers/redact`: deletes this customer's own `sync_log` rows
+        (new `deleteSyncLogForCustomer` in `src/db/syncLog.ts`). Does NOT
+        touch order-entity `sync_log` rows (keyed by Shopify's order
+        *name*, e.g. "#1001" — not the numeric order ids this payload's
+        `orders_to_redact` provides, so they can't be reliably correlated)
+        or the HubSpot Contact itself (unilaterally deleting a merchant's
+        CRM record on a customer's request to Shopify is a bigger call
+        than this webhook should make) — both logged as needing manual
+        follow-up rather than silently skipped.
+      - `shop/redact`: the one fully-automatable case — deletes the
+        `merchants` row (encrypted tokens included) and every `sync_log`
+        row for that shop (new `deleteMerchant` in `src/db/merchants.ts`,
+        `deleteSyncLogForShop` in `src/db/syncLog.ts`). Also resolves 10b
+        below within Shopify's guaranteed 48-hour post-uninstall window.
+      Verified with fake merchant/sync_log rows (`gdpr-test-fake-store-a/b
+      .myshopify.com`) seeded directly via SQL — deliberately never
+      touched the real dev store, confirmed both during and after the test
+      that `hubspottest-retveu6u.myshopify.com`'s merchant row (portal id,
+      Shopify token) was untouched. Confirmed: `data_request` deletes
+      nothing; `customers/redact` deleted only the matching customer log
+      row, left the order log row and merchant row alone; `shop/redact`
+      deleted the merchant row and all of that shop's log rows.
+      **Still needed, external to this repo**: these three URLs
+      (`<APP_URL>/webhooks/shopify/customers/data_request`, `/customers/
+      redact`, `/shop/redact`) must be configured in the Shopify Partner
+      Dashboard's compliance/mandatory-webhooks section — unlike
+      orders/create etc., these aren't registered per-shop via the Admin
+      API (`registerWebhooksForShop`), since they need to reach the app
+      even for shops with no active installation.
+    - 10b. No `app/uninstalled` handling — an uninstalled merchant's
+      (encrypted) tokens sit in the DB indefinitely and sync attempts fail
+      silently into `sync_log` forever. Downgraded from "separate fix
+      needed" to "bounded by 10a": implementing `shop/redact` properly
+      deletes the merchant row within Shopify's guaranteed 48-hour window,
+      which resolves the practical impact even without a dedicated
+      `app/uninstalled` handler.
+    - 10c. No automated test suite — every guarantee in this app (retry/
+      backoff, concurrent-webhook dedup, deal-rule evaluation, encryption
+      round-tripping) is proven only by manual live testing against the one
+      real dev store, not by anything that would catch a future regression.
+    - 10d. No way to regenerate a lost admin API key (minted once, shown
+      once, no reset endpoint) — flagged originally in step 9.
+    - 10e. Refunds aren't synced (`refunds/create` isn't a subscribed
+      webhook topic) — a refunded order's Deal keeps its original amount/
+      stage unless a merchant hand-writes deal-rules via raw REST calls.
+    - 10f. No proactive alert if a merchant revokes HubSpot access from
+      inside their portal — flagged originally in step 9, still open.
+    - 10g. Backfill/sync is fully sequential, no batching — fine at target
+      scale (tens–hundreds of orders/month), would be slow for a merchant
+      with a large historical order count.
+
+    Security findings, not yet fixed:
+    - 10h. Postgres connection disables TLS certificate verification
+      (`ssl: { rejectUnauthorized: false }` in `src/db/client.ts`). Traffic
+      is still encrypted, but the client never verifies it's actually
+      talking to Supabase — a network-positioned attacker could MITM with a
+      self-signed cert undetected. Fix: fetch Supabase's real CA cert, use
+      `ssl: { ca: ... }` instead.
+    - 10i. Credential hygiene: several real secrets (DB password, Shopify/
+      HubSpot client secrets, the admin key, the encryption key) were
+      displayed in plaintext in chat multiple times this session while
+      debugging live. Not a public leak, but worth rotating the cheap ones
+      (`ADMIN_API_KEY`, `OAUTH_STATE_SECRET`) before onboarding real
+      merchants; `ENCRYPTION_KEY`/DB password are harder to rotate
+      (need coordinated re-encryption/reconnect) so lower urgency.
+    - 10j. No rate limiting anywhere (OAuth routes, webhook receiver,
+      `/sync-status`) — acceptable at current scale, worth knowing it's
+      absent.
+
+    Checked and confirmed NOT vulnerable (documented so this isn't
+    re-litigated later): SQL injection (parameterized queries throughout),
+    XSS (no user-controlled Shopify/HubSpot content ever reflected into the
+    onboarding HTML pages), SSRF via the `shop` param (Shopify SDK's
+    `sanitizeShop` enforces a real `*.myshopify.com` domain, verified
+    directly in its source), webhook HMAC and OAuth state CSRF protection
+    (both timing-safe, state additionally expires after 10 minutes).

@@ -75,3 +75,25 @@ export async function getRecentSyncLog(limit = 50, shopDomain?: string): Promise
     createdAt: row.created_at,
   }));
 }
+
+// Shopify's mandatory `shop/redact` GDPR webhook — deletes every log entry
+// for a shop, no exceptions (an audit trail isn't a valid reason to retain
+// data after a redact request).
+export async function deleteSyncLogForShop(shopDomain: string): Promise<void> {
+  await ensureSchema();
+  await pool.query('DELETE FROM sync_log WHERE shop_domain = $1', [shopDomain]);
+}
+
+// Shopify's mandatory `customers/redact` GDPR webhook — deletes only the
+// customer-entity rows for this email (order-entity rows are keyed by
+// Shopify's order *name*, e.g. "#1001", not the numeric order id Shopify's
+// redact payload provides in `orders_to_redact`, so those can't be reliably
+// correlated to this customer without also storing the numeric id; noted
+// as a known gap rather than silently doing nothing).
+export async function deleteSyncLogForCustomer(shopDomain: string, email: string): Promise<void> {
+  await ensureSchema();
+  await pool.query(
+    `DELETE FROM sync_log WHERE shop_domain = $1 AND entity_type = 'customer' AND shopify_id = $2`,
+    [shopDomain, email]
+  );
+}

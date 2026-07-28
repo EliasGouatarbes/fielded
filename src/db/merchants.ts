@@ -105,3 +105,14 @@ export async function saveAdminApiKeyHash(shopDomain: string, hash: string): Pro
     [shopDomain, hash]
   );
 }
+
+// Shopify's mandatory `shop/redact` GDPR webhook (src/shopify/webhooks.ts)
+// — sent ~48h after a shop uninstalls, requiring every trace of that shop
+// to be deleted. Plain DELETE, no soft-delete/archive: there's no feature
+// in this app that depends on a record of a shop having once existed, and
+// keeping one around would defeat the point of the redact request. Safe to
+// call on a shop that's already gone (no-op).
+export async function deleteMerchant(shopDomain: string): Promise<void> {
+  await ensureSchema();
+  await pool.query('DELETE FROM merchants WHERE shop_domain = $1', [shopDomain]);
+}
