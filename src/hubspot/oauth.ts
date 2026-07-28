@@ -14,6 +14,8 @@ const OAUTH_SCOPES = [
   'crm.objects.contacts.write',
   'crm.objects.deals.read',
   'crm.objects.deals.write',
+  'crm.objects.line_items.read',
+  'crm.objects.line_items.write',
 ].join(' ');
 
 export function hashAdminApiKey(key: string): string {

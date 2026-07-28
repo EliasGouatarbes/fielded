@@ -1,5 +1,7 @@
 import { pool, ensureSchema } from './client';
 import { DealRule } from '../hubspot/dealRules';
+import { config } from '../config';
+import { encrypt, decrypt } from '../crypto';
 
 export interface Merchant {
   shopDomain: string;
@@ -30,10 +32,10 @@ interface MerchantRow {
 function toMerchant(row: MerchantRow): Merchant {
   return {
     shopDomain: row.shop_domain,
-    shopifyAccessToken: row.shopify_access_token,
+    shopifyAccessToken: decrypt(row.shopify_access_token, config.encryptionKey),
     hubspotPortalId: row.hubspot_portal_id,
-    hubspotAccessToken: row.hubspot_access_token,
-    hubspotRefreshToken: row.hubspot_refresh_token,
+    hubspotAccessToken: row.hubspot_access_token ? decrypt(row.hubspot_access_token, config.encryptionKey) : null,
+    hubspotRefreshToken: row.hubspot_refresh_token ? decrypt(row.hubspot_refresh_token, config.encryptionKey) : null,
     hubspotTokenExpiresAt: row.hubspot_token_expires_at,
     dealPipeline: row.deal_pipeline,
     dealStage: row.deal_stage,
@@ -57,7 +59,7 @@ export async function saveShopifyToken(shopDomain: string, accessToken: string):
     `INSERT INTO merchants (shop_domain, shopify_access_token, updated_at)
      VALUES ($1, $2, now())
      ON CONFLICT (shop_domain) DO UPDATE SET shopify_access_token = EXCLUDED.shopify_access_token, updated_at = now()`,
-    [shopDomain, accessToken]
+    [shopDomain, encrypt(accessToken, config.encryptionKey)]
   );
 }
 
@@ -78,7 +80,13 @@ export async function saveHubSpotConnection(
          hubspot_connected_at = now(),
          updated_at = now()
      WHERE shop_domain = $1`,
-    [shopDomain, params.accessToken, params.refreshToken, params.expiresAt, params.portalId]
+    [
+      shopDomain,
+      encrypt(params.accessToken, config.encryptionKey),
+      encrypt(params.refreshToken, config.encryptionKey),
+      params.expiresAt,
+      params.portalId,
+    ]
   );
 }
 

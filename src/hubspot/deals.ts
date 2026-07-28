@@ -4,6 +4,13 @@ import { extractConflictingId } from './conflict';
 import { withKeyedLock } from '../mutex';
 import { getCachedId, setCachedId } from './idCache';
 
+export interface DealLineItem {
+  name: string;
+  quantity: number;
+  price?: string;
+  sku?: string;
+}
+
 export interface DealProperties {
   // The Shopify order number (e.g. Shopify's `order.name`, "#1001") goes
   // straight into dealname — that's the property HubSpot's search actually
@@ -17,6 +24,12 @@ export interface DealProperties {
   pipeline?: string;
   stage?: string;
   owner?: string;
+  // Only applied when this call creates a brand-new deal (see
+  // createLineItems below) — Shopify order line items don't change after
+  // an order is placed, so there's no need to reconcile them on every
+  // orders/updated delivery (which fires for financial/fulfillment status
+  // changes, not product edits).
+  lineItems?: DealLineItem[];
 }
 
 // Search-before-create by dealname (the order number): a retried
@@ -112,6 +125,9 @@ async function upsertDealByNameLocked(
       { label: `HubSpot deal create (${deal.dealname})` }
     );
     setCachedId(cacheKey, created.id);
+    if (deal.lineItems?.length) {
+      await createLineItems(client, created.id, deal.lineItems);
+    }
     return created.id;
   } catch (err) {
     // Belt-and-suspenders: unlike contacts' email, HubSpot doesn't actually
@@ -126,5 +142,40 @@ async function upsertDealByNameLocked(
     });
     setCachedId(cacheKey, conflictId);
     return conflictId;
+  }
+}
+
+// Attaches Shopify's order line items to a newly-created deal, product-level
+// data (SKU, quantity, price) HubSpot's own Shopify integration reviewers
+// repeatedly flag as missing/unusable ("no SKUs", "can't build lists by
+// product bought"). No search-before-create here: this only ever runs right
+// after this deal's own create call, so there's nothing to search for yet.
+async function createLineItems(client: HubSpotClient, dealId: string, lineItems: DealLineItem[]): Promise<void> {
+  for (const item of lineItems) {
+    const properties: Record<string, string> = {
+      name: item.name,
+      quantity: String(item.quantity),
+    };
+    if (item.price !== undefined) properties.price = item.price;
+    if (item.sku !== undefined) properties.hs_sku = item.sku;
+
+    await withRetry(
+      () =>
+        client.crm.lineItems.basicApi.create({
+          properties,
+          associations: [
+            {
+              to: { id: dealId },
+              types: [
+                {
+                  associationCategory: 'HUBSPOT_DEFINED' as any,
+                  associationTypeId: AssociationTypes.lineItemToDeal,
+                },
+              ],
+            },
+          ],
+        }),
+      { label: `HubSpot line item create (${item.name})` }
+    );
   }
 }

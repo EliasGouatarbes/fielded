@@ -28,6 +28,17 @@ export interface ShopifyCustomer {
   default_address?: ShopifyAddress | null;
 }
 
+export interface ShopifyLineItem {
+  title: string;
+  quantity: number;
+  price?: string | null;
+  sku?: string | null;
+  // Distinguishes product variants (e.g. size/color) sharing the same
+  // product title — folded into the HubSpot line item's name below since
+  // line items have no separate variant property.
+  variant_title?: string | null;
+}
+
 export interface ShopifyOrder {
   name: string; // e.g. "#1001" — the human-facing order number
   total_price?: string | null;
@@ -37,6 +48,7 @@ export interface ShopifyOrder {
   // Shopify's real Order resource has no boolean `cancelled` field, only
   // this nullable timestamp — evaluateDealRules derives the boolean itself.
   cancelled_at?: string | null;
+  line_items?: ShopifyLineItem[] | null;
 }
 
 export async function syncCustomer(customer: ShopifyCustomer, merchant: MerchantContext): Promise<string | undefined> {
@@ -98,6 +110,12 @@ export async function syncOrder(order: ShopifyOrder, merchant: MerchantContext):
         pipeline: target.pipeline,
         stage: target.stage,
         owner: target.owner,
+        lineItems: order.line_items?.map((item) => ({
+          name: item.variant_title ? `${item.title} - ${item.variant_title}` : item.title,
+          quantity: item.quantity,
+          price: item.price ?? undefined,
+          sku: item.sku ?? undefined,
+        })),
       },
       contactId
     );

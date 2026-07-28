@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { parseEncryptionKey } from './crypto';
 
 // Fail loudly and immediately if required config is missing, rather than
 // letting a blank token cause a confusing 401 three files away.
@@ -45,6 +46,11 @@ export interface AppConfig {
   // deliberately its own secret rather than reusing SHOPIFY_API_SECRET_KEY,
   // since these are two independent trust boundaries.
   oauthStateSecret: string;
+  // AES-256-GCM key encrypting merchants.shopify_access_token /
+  // hubspot_access_token / hubspot_refresh_token at rest (src/crypto.ts,
+  // applied in src/db/merchants.ts). Parsed eagerly so a malformed key fails
+  // at boot, not on the first token read/write.
+  encryptionKey: Buffer;
 }
 
 const REQUIRED_VARS = [
@@ -56,6 +62,7 @@ const REQUIRED_VARS = [
   'HUBSPOT_CLIENT_SECRET',
   'OAUTH_STATE_SECRET',
   'ADMIN_API_KEY',
+  'ENCRYPTION_KEY',
 ] as const;
 // SHOPIFY_ADMIN_ACCESS_TOKEN is deliberately NOT required at boot: as of
 // step 5, the Postgres row in `merchants` (see src/db/) is the real source
@@ -99,6 +106,7 @@ function loadConfig(): AppConfig {
       clientSecret: process.env.HUBSPOT_CLIENT_SECRET as string,
     },
     oauthStateSecret: process.env.OAUTH_STATE_SECRET as string,
+    encryptionKey: parseEncryptionKey(process.env.ENCRYPTION_KEY as string),
   };
 }
 

@@ -268,6 +268,89 @@ marketing suite or Stacksync's enterprise-scale sync.
    real `orders/updated` webhook path (not a manual patch) — confirmed all
    three now carry `pipeline: default, dealstage: closedwon`. Needs the
    same two env vars added on Render to take effect there too.
+9b. [CODE DONE, BLOCKED ON MANUAL HUBSPOT SCOPE CHANGE, 2026-07-28] Line
+   items on the Deal. Prompted by reading 55 real reviews of HubSpot's own
+   Shopify integration (user-supplied): repeated, specific complaints about
+   no SKU/product-level data reaching HubSpot ("disappointing integration
+   that provides neither SKUs nor usable order data", "can't build lists
+   based off what products customers bought"). Checked this app's own code
+   against its v1 scope claim ("Products/line items attached to the Deal")
+   and found it was never actually implemented — `sync.ts`/`deals.ts` only
+   ever set `dealname`/`amount`/`pipeline`/`stage`/`owner`, no line items at
+   all. Fixed: `ShopifyOrder.line_items` (src/sync.ts) maps each Shopify
+   line item (title + variant_title folded into one `name`, quantity,
+   price, sku) into a `DealLineItem`; `src/hubspot/deals.ts`'s new
+   `createLineItems()` creates each as its own HubSpot line item object,
+   associated to the deal via `AssociationTypes.lineItemToDeal`.
+   Deliberately only runs on the deal's initial create, not on every
+   `orders/updated` — Shopify order line items don't change after an order
+   is placed (unlike financial_status/fulfillment_status, which is what
+   orders/updated actually fires for), so there's nothing to reconcile on
+   later deliveries; kept simple rather than adding a fetch-existing/
+   diff/archive-and-recreate step for a case that doesn't occur in
+   practice.
+   `npm run build` compiles clean. Tried to verify live end-to-end (signed
+   `orders/create` webhook with two line items, against the real dev store)
+   and hit a real blocker: HubSpot rejected the line-item create with 403
+   `MISSING_SCOPES`, requiring `crm.objects.line_items.write` (or the
+   broader `e-commerce` scope) — neither is in this OAuth app's current
+   scope list (only contacts/deals read+write from when this was built).
+   **Not yet usable until:**
+   1. Add `crm.objects.line_items.write` (narrowest fit — avoid the
+      broader `e-commerce` scope) to this app's OAuth scopes. Since this is
+      a CLI-managed public app (see step 9's June-2026 HubSpot CLI note),
+      that means editing `requiredScopes` in the project's
+      `app-hsmeta.json` and running `hs project upload` again — not a
+      dashboard toggle. (This repo doesn't contain that HubSpot CLI
+      project directory — it lives wherever `hs project create` was
+      originally run.)
+   2. Every already-connected merchant (currently just the one dev store)
+      must redo the HubSpot OAuth handshake
+      (`/auth/hubspot?shop=<domain>`) — a merchant's granted scopes are
+      fixed at authorization time and don't retroactively pick up new
+      scopes added to the app later. Until reconnected, `syncOrder` will
+      keep hitting this same 403 for every order with line items.
+   Test deal/contact created during the (failed) live test were cleaned up
+   via direct HubSpot API calls afterward; no line items were left behind
+   since the create call itself is what failed.
+   **[RESOLVED, VERIFIED, 2026-07-28]** User added
+   `crm.objects.line_items.read`/`write` to the HubSpot project's
+   `app-hsmeta.json` `requiredScopes` and ran `hs project upload`. That
+   surfaced two more real gaps before this actually worked, both fixed:
+   - First reconnect attempt failed with "redirect URL doesn't match the
+     app's registered redirect URL" — turned out to be a red herring order
+     of operations, not an actual redirectUrls problem (screenshot
+     confirmed `app-hsmeta.json` already listed both the localhost and
+     Render callback URLs correctly).
+   - Real blocker: HubSpot then rejected the authorize request with
+     "provided scopes are missing crm.objects.line_items.read/write, which
+     are required for the app to function." Root cause was in this repo,
+     not HubSpot's config: `src/hubspot/oauth.ts`'s hardcoded
+     `OAUTH_SCOPES` list (used to build the `/auth/hubspot` authorize URL)
+     still only requested the original contacts/deals scopes — once the
+     HubSpot app's `requiredScopes` grew, every install's authorize request
+     had to request the new scopes too, or HubSpot rejects it outright.
+     Fixed by adding both line-item scopes to `OAUTH_SCOPES`.
+   After that fix: reconnected the dev store via
+   `/auth/hubspot?shop=hubspottest-retveu6u.myshopify.com`; directly
+   queried HubSpot's access-token introspection endpoint and confirmed the
+   stored token now carries both `crm.objects.line_items.read` and
+   `.write`. Re-ran the same signed `orders/create` webhook test (two line
+   items, one with a variant) against the live dev store and confirmed via
+   direct HubSpot API calls: both line items created, correctly associated
+   to the deal (`AssociationTypes.lineItemToDeal`), and carrying the right
+   `name` (title + variant folded together), `price`, `hs_sku`, and
+   `quantity` — HubSpot's own `amount` on each line item is a computed
+   `price × quantity` value, not something this app sets directly. Deal's
+   own `amount` still reflects the full order total, unaffected. Test
+   deal/line items/contact deleted afterward.
+   Still needed: this scope change plus the `OAUTH_SCOPES` fix haven't
+   reached Render yet — the production HubSpot app config was already
+   updated (shared across environments, it's the same HubSpot app), but
+   this repo's code fix needs a normal deploy, and Render's own connected
+   merchants (currently none beyond the dev store) would need the same
+   reconnect step once real merchants exist.
+
 9. Business steps: Shopify App Store review (needs a privacy policy — touches
    customer PII), billing/pricing setup.
    [DONE — multi-merchant + configurable deal mapping, 2026-07-25] Per
@@ -366,3 +449,42 @@ marketing suite or Stacksync's enterprise-scale sync.
    encryption and DB access controls. Fine as plaintext for now (dev-only
    data) — flagged here so it doesn't get dropped now that this is actually
    multi-merchant.
+   [DONE, VERIFIED, 2026-07-28] Encryption at rest for the three token
+   columns above. `src/crypto.ts`: AES-256-GCM, stores `iv:authTag:
+   ciphertext` (each base64) in the existing TEXT columns — no schema
+   change. Key is a new required `ENCRYPTION_KEY` env var (config.ts),
+   consciously choosing "env var, separate from DATABASE_URL" over a real
+   secrets-manager integration (AWS KMS/Vault) — explicit user call, given
+   this is a single-operator app on Render's free tier and a full KMS was
+   judged disproportionate infra for the stage this app is at. Revisit if
+   that calculus changes (e.g. a compliance requirement, or Render access
+   ceases to be single-operator).
+   `src/db/merchants.ts` encrypts on every write (`saveShopifyToken`,
+   `saveHubSpotConnection`) and decrypts on every read (`toMerchant`) —
+   callers elsewhere (hubspot/tokens.ts, shopify/token.ts, webhooks.ts) never
+   see ciphertext, so no other file changed.
+   One-time migration for the row(s) that predate this:
+   `npm run encrypt-existing-tokens` (`src/scripts/encrypt-existing-tokens.ts`,
+   same "own pg.Pool, don't import src/config.ts" shape as
+   migrate-merchants.ts, since it must run with `ENCRYPTION_KEY` set but
+   before the app's other required vars necessarily are). Idempotent —
+   `looksEncrypted()` skips rows already in `iv:authTag:ciphertext` form —
+   so safe to re-run. Must run against the live DB *before* deploying this
+   code, same ordering as the migrate-merchants step.
+   **Sharp edge, unlike `OAUTH_STATE_SECRET`**: local `.env` and Render share
+   the *same* Supabase database (no separate staging DB), so `ENCRYPTION_KEY`
+   must be set to the identical value in both places — whichever side reads
+   a row the other encrypted needs the same key, or decryption throws.
+   Verified locally against the live Supabase DB: `npm run build` compiles
+   clean; `npm run encrypt-existing-tokens` encrypted the one existing
+   dev-store row and printed `encrypted`; re-running it printed `already
+   encrypted, skipping` (idempotency confirmed); started the server and hit
+   `/health` (`database.connected: true`) and the key-gated `/sync-status`
+   (returned real historical entries, proving `ADMIN_API_KEY` auth plus the
+   DB read path both still work); then directly called `getMerchant()` and
+   confirmed the decrypted `shopifyAccessToken` comes back as a real
+   `shpat_...` token (not ciphertext or garbage) and that the HubSpot token
+   fields decrypt too. `ENCRYPTION_KEY` still needs adding to Render's
+   Environment tab (same value as local `.env`, per the sharp edge above)
+   before the next deploy — the running production instance is still
+   reading plaintext until that env var lands there and it redeploys.

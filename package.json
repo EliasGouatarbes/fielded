@@ -12,7 +12,8 @@
     "start": "node dist/server.js",
     "backfill": "ts-node --transpile-only src/scripts/backfill.ts",
     "register-webhooks": "ts-node --transpile-only src/scripts/register-webhooks.ts",
-    "migrate-merchants": "ts-node --transpile-only src/scripts/migrate-merchants.ts"
+    "migrate-merchants": "ts-node --transpile-only src/scripts/migrate-merchants.ts",
+    "encrypt-existing-tokens": "ts-node --transpile-only src/scripts/encrypt-existing-tokens.ts"
   },
   "dependencies": {
     "@hubspot/api-client": "^14.0.1",
