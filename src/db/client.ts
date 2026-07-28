@@ -1,14 +1,25 @@
+import fs from 'fs';
+import path from 'path';
 import { Pool } from 'pg';
 import { config } from '../config';
 
-// Supabase and Neon's free-tier connection strings both require TLS, but
-// their certificate chains aren't always in Node's default trust store —
-// rejectUnauthorized: false is the standard pragmatic default for talking to
-// either from node-postgres. Revisit if this ever handles a provider with a
-// properly chained cert.
+// Was `rejectUnauthorized: false` (10h, CLAUDE.md pre-launch audit) —
+// traffic was still encrypted, but the client never verified it was
+// actually talking to Supabase, so a network-positioned attacker could MITM
+// with a self-signed cert undetected. Fixed with Supabase's actual root CA
+// (downloaded from the project's Database -> Settings -> SSL Configuration
+// page, not a secret — it only lets this app verify the server's identity,
+// same as any CA in a normal trust store, so it's safe to commit rather
+// than juggle as a multi-line env var). Same CA works for both the direct
+// connection host and the Session Pooler host this app actually uses (step
+// 5's `aws-0-<region>.pooler.supabase.com`) — it's Supabase's shared
+// platform root, not project-specific, confirmed live against this app's
+// real pooler connection string.
+const SUPABASE_CA_CERT = fs.readFileSync(path.join(__dirname, 'supabase-ca.crt'), 'utf8');
+
 export const pool = new Pool({
   connectionString: config.db.connectionString,
-  ssl: { rejectUnauthorized: false },
+  ssl: { ca: SUPABASE_CA_CERT, rejectUnauthorized: true },
 });
 
 let schemaReady: Promise<void> | undefined;

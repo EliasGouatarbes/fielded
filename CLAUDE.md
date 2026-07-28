@@ -908,12 +908,48 @@ marketing suite or Stacksync's enterprise-scale sync.
       too slow — nothing this pass forecloses that later.
 
     Security findings, not yet fixed:
-    - 10h. Postgres connection disables TLS certificate verification
-      (`ssl: { rejectUnauthorized: false }` in `src/db/client.ts`). Traffic
-      is still encrypted, but the client never verifies it's actually
-      talking to Supabase — a network-positioned attacker could MITM with a
-      self-signed cert undetected. Fix: fetch Supabase's real CA cert, use
-      `ssl: { ca: ... }` instead.
+    - **10h. [DONE, VERIFIED, 2026-07-28]** Postgres connection disabled
+      TLS certificate verification (`ssl: { rejectUnauthorized: false }` in
+      `src/db/client.ts`). Traffic was still encrypted, but the client never
+      verified it was actually talking to Supabase — a network-positioned
+      attacker could MITM with a self-signed cert undetected.
+      Fixed with Supabase's real root CA (`Supabase Root 2021 CA`, valid
+      2021–2031) — user downloaded it from their project's Database ->
+      Settings -> SSL Configuration page (this isn't fetchable from any
+      stable public URL, and public GitHub copies floating around aren't a
+      trustworthy source for a security fix) and pasted it in; parsed and
+      confirmed well-formed (self-signed, correct subject/issuer) with
+      Node's `crypto.X509Certificate` before using it. Committed directly
+      as `src/db/supabase-ca.crt` rather than a multi-line env var — it's
+      not a secret, it only lets this app verify the server's identity,
+      same as any CA in a normal trust store. `src/db/client.ts` now does
+      `ssl: { ca: <cert contents>, rejectUnauthorized: true }` instead of
+      `rejectUnauthorized: false`.
+      One build wrinkle: `tsc` doesn't copy non-`.ts` files, and
+      `path.join(__dirname, 'supabase-ca.crt')` resolves relative to
+      wherever the *running* file lives — `dist/db/` after a build, `src/db/`
+      under `ts-node`/`ts-node-dev` (which run the source in place, so the
+      other scripts and `npm run dev` needed no changes). Fixed by
+      appending a copy step to the `build` script itself
+      (`tsc && node -e "...copyFileSync(...)..."`) rather than a separate
+      shell command, since this needs to run identically in `package.json`
+      regardless of the host shell (PowerShell locally vs. Render's Linux
+      build).
+      Verified: `npm run build` produces `dist/db/supabase-ca.crt`; all 62
+      tests still pass. Live-verified against the real Supabase Session
+      Pooler connection (`aws-0-<region>.pooler.supabase.com`, per step 5)
+      — confirming the same CA that signs the direct-connection cert also
+      signs the pooler's, which wasn't guaranteed by the docs alone: a
+      direct query with the new `ssl: {ca, rejectUnauthorized: true}` config
+      succeeded (`SELECT 1` returned normally), and `/health` on the live
+      running dev server (auto-reloaded via `ts-node-dev`) still reported
+      `database.connected: true`. Negative control, to prove verification
+      is actually enforced and not silently bypassed: the same connection
+      attempt with a deliberately wrong/garbage CA correctly failed with
+      `self-signed certificate in certificate chain` rather than connecting
+      anyway.
+      Nothing needed on Render's side — the cert travels with the repo, no
+      new env var.
     - 10i. Credential hygiene: several real secrets (DB password, Shopify/
       HubSpot client secrets, the admin key, the encryption key) were
       displayed in plaintext in chat multiple times this session while
