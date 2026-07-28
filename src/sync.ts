@@ -51,7 +51,16 @@ export interface ShopifyOrder {
   line_items?: ShopifyLineItem[] | null;
 }
 
-export async function syncCustomer(customer: ShopifyCustomer, merchant: MerchantContext): Promise<string | undefined> {
+// `lifecycleStage` is only ever passed by syncOrder below — a plain
+// customers/create webhook (see webhooks.ts) fires on account creation
+// alone, which isn't evidence of a completed purchase. Reviewers of
+// HubSpot's own Shopify integration specifically flagged the opposite bug:
+// contacts staying "leads" forever even after buying.
+export async function syncCustomer(
+  customer: ShopifyCustomer,
+  merchant: MerchantContext,
+  lifecycleStage?: string
+): Promise<string | undefined> {
   if (!customer.email) return undefined;
 
   try {
@@ -65,6 +74,7 @@ export async function syncCustomer(customer: ShopifyCustomer, merchant: Merchant
       state: customer.default_address?.province ?? undefined,
       zip: customer.default_address?.zip ?? undefined,
       country: customer.default_address?.country ?? undefined,
+      lifecyclestage: lifecycleStage,
     });
     await logSyncResult({
       entityType: 'customer',
@@ -88,7 +98,7 @@ export async function syncCustomer(customer: ShopifyCustomer, merchant: Merchant
 
 export async function syncOrder(order: ShopifyOrder, merchant: MerchantContext): Promise<void> {
   try {
-    const contactId = order.customer ? await syncCustomer(order.customer, merchant) : undefined;
+    const contactId = order.customer ? await syncCustomer(order.customer, merchant, 'customer') : undefined;
 
     const target = evaluateDealRules(
       merchant.dealRules,

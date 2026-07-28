@@ -351,6 +351,22 @@ marketing suite or Stacksync's enterprise-scale sync.
    merchants (currently none beyond the dev store) would need the same
    reconnect step once real merchants exist.
 
+9c. [DONE, VERIFIED, 2026-07-28] Lifecycle stage on purchase. Second item
+   from the same 55-review pass (see 9b): reviewers of HubSpot's own
+   Shopify integration specifically complained contacts stay stuck as
+   "leads" forever even after completing a purchase, and that the old
+   integration used to move them to "Customer" automatically. Fixed:
+   `src/hubspot/contacts.ts`'s `ContactProperties` gained an optional
+   `lifecyclestage`; `src/sync.ts`'s `syncCustomer()` takes an optional
+   `lifecycleStage` param, and `syncOrder()` is the only caller that passes
+   `'customer'` — the plain `customers/create` webhook path (account
+   creation alone, not evidence of a purchase) leaves it unset so it
+   doesn't wrongly promote someone who hasn't bought anything.
+   Verified live against the real dev store/HubSpot portal: a bare
+   `customers/create` webhook left the contact at the portal's default
+   (`lead`); a following `orders/create` webhook for the same email moved
+   it to `customer`. Test contact/deal deleted afterward.
+
 9. Business steps: Shopify App Store review (needs a privacy policy — touches
    customer PII), billing/pricing setup.
    [DONE — multi-merchant + configurable deal mapping, 2026-07-25] Per

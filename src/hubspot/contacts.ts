@@ -18,6 +18,10 @@ export interface ContactProperties {
   state?: string;
   zip?: string;
   country?: string;
+  // Only ever set to 'customer', and only by an order sync (see
+  // src/sync.ts) — a plain customers/create webhook fires on account
+  // creation alone, which doesn't mean they've bought anything yet.
+  lifecyclestage?: string;
 }
 
 // Search-before-create: a retried Shopify webhook must update the existing
