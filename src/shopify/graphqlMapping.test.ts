@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapGraphqlCustomer, mapGraphqlOrder, GraphqlCustomerNode, GraphqlOrderNode } from './graphqlMapping';
+import { mapGraphqlCustomer, mapGraphqlOrder, orderGid, GraphqlCustomerNode, GraphqlOrderNode } from './graphqlMapping';
+
+test('orderGid builds a GraphQL global id from a numeric REST order id', () => {
+  assert.equal(orderGid(6000123456789), 'gid://shopify/Order/6000123456789');
+  assert.equal(orderGid('6000123456789'), 'gid://shopify/Order/6000123456789');
+});
 
 test('mapGraphqlCustomer maps a fully-populated node', () => {
   const node: GraphqlCustomerNode = {

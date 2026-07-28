@@ -1,5 +1,36 @@
-import { Connection } from './admin-graphql';
+import { Connection, shopifyGraphqlRequest } from './admin-graphql';
 import { ShopifyAddress, ShopifyCustomer, ShopifyLineItem, ShopifyOrder } from '../sync';
+
+// The same field selection as ORDERS_QUERY's order node, just fetched by id
+// instead of paginated — used by the refunds/create webhook handler
+// (src/shopify/webhooks.ts) to re-fetch an order's *current* (post-refund)
+// state, since the refund payload itself only carries a numeric order_id
+// and no total/status fields.
+const ORDER_NODE_FIELDS = `
+  name
+  currentTotalPriceSet { shopMoney { amount } }
+  displayFinancialStatus
+  displayFulfillmentStatus
+  cancelledAt
+  customer {
+    defaultEmailAddress { emailAddress }
+    firstName
+    lastName
+    defaultPhoneNumber { phoneNumber }
+    defaultAddress { address1 city province zip country }
+  }
+  lineItems(first: 250) {
+    edges {
+      node {
+        title
+        quantity
+        sku
+        variantTitle
+        originalUnitPriceSet { shopMoney { amount } }
+      }
+    }
+  }
+`;
 
 // Query field selection and the mappers below are deliberately co-located —
 // they must never drift apart, since the mapper assumes exactly these
@@ -28,34 +59,16 @@ export const ORDERS_QUERY = `#graphql
     orders(first: $first, after: $after, query: $query) {
       edges {
         cursor
-        node {
-          name
-          currentTotalPriceSet { shopMoney { amount } }
-          displayFinancialStatus
-          displayFulfillmentStatus
-          cancelledAt
-          customer {
-            defaultEmailAddress { emailAddress }
-            firstName
-            lastName
-            defaultPhoneNumber { phoneNumber }
-            defaultAddress { address1 city province zip country }
-          }
-          lineItems(first: 250) {
-            edges {
-              node {
-                title
-                quantity
-                sku
-                variantTitle
-                originalUnitPriceSet { shopMoney { amount } }
-              }
-            }
-          }
-        }
+        node { ${ORDER_NODE_FIELDS} }
       }
       pageInfo { hasNextPage endCursor }
     }
+  }
+`;
+
+export const ORDER_BY_ID_QUERY = `#graphql
+  query OrderById($id: ID!) {
+    order(id: $id) { ${ORDER_NODE_FIELDS} }
   }
 `;
 
@@ -105,6 +118,18 @@ export interface OrdersQueryData {
   orders: Connection<GraphqlOrderNode>;
 }
 
+interface OrderByIdData {
+  order: GraphqlOrderNode | null;
+}
+
+// GraphQL Admin API objects are addressed by a global id, not the numeric
+// REST id Shopify's webhook payloads (e.g. refunds/create's `order_id`)
+// carry — pure and exported so the id construction is independently
+// testable without a live client.
+export function orderGid(numericOrderId: number | string): string {
+  return `gid://shopify/Order/${numericOrderId}`;
+}
+
 function mapGraphqlAddress(address?: GraphqlAddress | null): ShopifyAddress | undefined {
   if (!address) return undefined;
   return {
@@ -146,4 +171,19 @@ export function mapGraphqlOrder(node: GraphqlOrderNode): ShopifyOrder {
     cancelled_at: node.cancelledAt,
     line_items: node.lineItems?.edges.map((edge) => mapGraphqlLineItem(edge.node)),
   };
+}
+
+// Used by the refunds/create webhook handler (src/shopify/webhooks.ts) to
+// re-fetch an order's current, post-refund state — the refund payload
+// itself only carries a numeric order_id. Returns undefined if the order
+// no longer exists (e.g. since deleted), so the caller can ack the webhook
+// rather than fail it.
+export async function fetchOrderById(shop: string, numericOrderId: number | string): Promise<ShopifyOrder | undefined> {
+  const data = await shopifyGraphqlRequest<OrderByIdData>(
+    shop,
+    ORDER_BY_ID_QUERY,
+    { id: orderGid(numericOrderId) },
+    'Shopify fetch order by id (refund re-sync)'
+  );
+  return data.order ? mapGraphqlOrder(data.order) : undefined;
 }

@@ -2,15 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { topicsNeedingRegistration } from './webhookRegistration';
 
-const TOPICS = ['orders/create', 'orders/updated', 'customers/create'];
+const TOPICS = ['orders/create', 'orders/updated', 'customers/create', 'refunds/create'];
 const TOPIC_TO_GRAPHQL_ENUM: Record<string, string> = {
   'orders/create': 'ORDERS_CREATE',
   'orders/updated': 'ORDERS_UPDATED',
   'customers/create': 'CUSTOMERS_CREATE',
+  'refunds/create': 'REFUNDS_CREATE',
 };
 const APP_URL = 'https://hubshop.onrender.com';
 
-test('topicsNeedingRegistration returns nothing when all 3 topics are already registered', () => {
+test('topicsNeedingRegistration returns nothing when all 4 topics are already registered', () => {
   const existing = TOPICS.map((topic, i) => ({
     id: `gid://shopify/WebhookSubscription/${i}`,
     topic: TOPIC_TO_GRAPHQL_ENUM[topic],
@@ -21,7 +22,7 @@ test('topicsNeedingRegistration returns nothing when all 3 topics are already re
   assert.deepEqual(missing, []);
 });
 
-test('topicsNeedingRegistration returns all 3 topics with correct enum + address when none are registered', () => {
+test('topicsNeedingRegistration returns all 4 topics with correct enum + address when none are registered', () => {
   const missing = topicsNeedingRegistration([], TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
   assert.deepEqual(missing, [
     { topic: 'orders/create', graphqlTopic: 'ORDERS_CREATE', address: `${APP_URL}/webhooks/shopify/orders/create` },
@@ -31,6 +32,7 @@ test('topicsNeedingRegistration returns all 3 topics with correct enum + address
       graphqlTopic: 'CUSTOMERS_CREATE',
       address: `${APP_URL}/webhooks/shopify/customers/create`,
     },
+    { topic: 'refunds/create', graphqlTopic: 'REFUNDS_CREATE', address: `${APP_URL}/webhooks/shopify/refunds/create` },
   ]);
 });
 
@@ -42,7 +44,7 @@ test('topicsNeedingRegistration returns only the missing topics on partial overl
   const missing = topicsNeedingRegistration(existing, TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
   assert.deepEqual(
     missing.map((m) => m.topic),
-    ['orders/updated', 'customers/create']
+    ['orders/updated', 'customers/create', 'refunds/create']
   );
 });
 

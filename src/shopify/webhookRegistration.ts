@@ -7,7 +7,12 @@
 import { config } from '../config';
 import { shopifyGraphqlRequest } from './admin-graphql';
 
-const TOPICS = ['orders/create', 'orders/updated', 'customers/create'];
+// refunds/create closes 10e (CLAUDE.md pre-launch audit): without it, a
+// refunded order's Deal kept its pre-refund amount/stage indefinitely on
+// the live webhook path (the historical backfill already picks refunds up
+// via GraphQL's currentTotalPriceSet, but a merchant shouldn't have to wait
+// for a backfill re-run).
+const TOPICS = ['orders/create', 'orders/updated', 'customers/create', 'refunds/create'];
 
 // GraphQL's WebhookSubscriptionTopic enum, one per entry in TOPICS above —
 // TOPICS itself stays REST-style (e.g. "orders/create") since it also drives
@@ -17,6 +22,7 @@ const TOPIC_TO_GRAPHQL_ENUM: Record<string, string> = {
   'orders/create': 'ORDERS_CREATE',
   'orders/updated': 'ORDERS_UPDATED',
   'customers/create': 'CUSTOMERS_CREATE',
+  'refunds/create': 'REFUNDS_CREATE',
 };
 
 interface ShopifyWebhookNode {

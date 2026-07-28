@@ -6,6 +6,7 @@ import { resolveMerchantContext } from '../hubspot/tokens';
 import { logSyncResult, deleteSyncLogForShop, deleteSyncLogForCustomer } from '../db/syncLog';
 import { deleteMerchant } from '../db/merchants';
 import { normalizeShopDomain } from './token';
+import { fetchOrderById } from './graphqlMapping';
 
 export const shopifyWebhookRouter = Router();
 
@@ -113,6 +114,46 @@ shopifyWebhookRouter.post('/customers/create', async (req, res) => {
     res.status(200).send('ok');
   } catch (err) {
     console.error('Failed to sync customers/create webhook:', err);
+    res.status(500).send('Sync failed.');
+  }
+});
+
+// Closes 10e (CLAUDE.md pre-launch audit): a refund on an order changes its
+// financial_status/total but nothing else fires for it on the live webhook
+// path, so a refunded Deal previously kept its original amount/stage
+// indefinitely. The Refund resource itself only carries a numeric
+// `order_id` — no order name, total, or status — so this re-fetches the
+// order's current (post-refund) state via GraphQL's currentTotalPriceSet
+// (src/shopify/graphqlMapping.ts's fetchOrderById) and re-runs it through
+// the exact same syncOrder path orders/create and orders/updated already
+// use, rather than trying to compute the new total from the refund payload
+// itself (refund/shipping/tax adjustments are exactly the kind of math
+// Shopify itself warns against re-deriving by hand).
+interface RefundPayload {
+  order_id?: number;
+}
+
+shopifyWebhookRouter.post('/refunds/create', async (req, res) => {
+  const { order_id: orderId } = req.body as RefundPayload;
+  if (!orderId) {
+    res.status(200).send('ok');
+    return;
+  }
+
+  const merchant = await resolveMerchantOrRespond(req, res, 'order', String(orderId));
+  if (!merchant) return;
+
+  try {
+    const order = await fetchOrderById(merchant.shopDomain, orderId);
+    if (!order) {
+      // Order no longer exists (e.g. deleted since) — nothing to re-sync.
+      res.status(200).send('ok');
+      return;
+    }
+    await syncOrder(order, merchant);
+    res.status(200).send('ok');
+  } catch (err) {
+    console.error('Failed to sync refunds/create webhook:', err);
     res.status(500).send('Sync failed.');
   }
 });

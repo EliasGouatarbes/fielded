@@ -722,23 +722,66 @@ marketing suite or Stacksync's enterprise-scale sync.
       9e's one-off use of the system's installed Chrome) — low risk since
       this reuses the `.warning` component as-is, already visually verified
       in step 9e for the webhook-warning state.
-    - **10e. [PARTIALLY RESOLVED, 2026-07-28]** Refunds aren't synced
+    - **10e. [DONE, VERIFIED, 2026-07-28]** Refunds aren't synced
       (`refunds/create` isn't a subscribed webhook topic) — a refunded
       order's Deal kept its original amount/stage unless a merchant
       hand-wrote deal-rules via raw REST calls. Researching this led
-      straight into step 11 below (the REST→GraphQL migration) — GraphQL's
-      `currentTotalPriceSet` field reflects the *current*, post-refund
-      total, unlike REST's `total_price` (the original). Now that
-      `src/backfillMerchant.ts` sources orders via GraphQL
-      (`src/shopify/graphqlMapping.ts`'s `mapGraphqlOrder`), a re-run of the
-      backfill picks up any refund that happened since. **Still open**: the
-      live webhook path (`orders/updated` in `src/shopify/webhooks.ts`,
-      unchanged by step 11) still receives Shopify's REST-shaped payload
-      with the original `total_price`, not a current/refunded total — a
-      refund on an already-synced order still won't update that Deal's
-      amount until the next full backfill. Subscribing to `refunds/create`
-      (or re-fetching the order via GraphQL from inside the webhook
-      handler) would close that gap; not done this pass.
+      straight into step 11 (the REST→GraphQL migration) — GraphQL's
+      `currentTotalPriceSet` field reflects the *current*, post-refund total,
+      unlike REST's `total_price` (the original) — so once
+      `src/backfillMerchant.ts` started sourcing orders via GraphQL, a
+      backfill re-run alone already picks up any refund. This closed the
+      remaining gap: the *live webhook path* still only reacted to
+      `orders/create`/`orders/updated`, neither of which fires on a refund,
+      so a refunded Deal would otherwise sit wrong indefinitely between
+      backfills.
+      Added `refunds/create` as a fourth subscribed topic (`REFUNDS_CREATE`
+      in `src/shopify/webhookRegistration.ts`'s topic list). The Refund
+      resource's webhook payload only carries a numeric `order_id` — no
+      order name, total, or status — so `src/shopify/webhooks.ts`'s new
+      `POST /refunds/create` handler re-fetches that order's current state
+      via a new single-order GraphQL query
+      (`src/shopify/graphqlMapping.ts`'s `fetchOrderById`, addressed by
+      `orderGid()` converting the REST numeric id into GraphQL's
+      `gid://shopify/Order/<id>` global-id format) and re-runs it through
+      the exact same `syncOrder` path `orders/create`/`orders/updated`
+      already use — deliberately not trying to hand-compute the new total
+      from the refund payload's own line items/transactions, since
+      refund/shipping/tax adjustment math is exactly what Shopify's own
+      `currentTotalPriceSet` already does correctly. Acks with 200 rather
+      than erroring if the order no longer exists (e.g. since deleted).
+      One schema wrinkle only caught by checking Shopify's actual docs
+      rather than trusting the first search result: `WebhookSubscriptionInput`'s
+      callback-URL field is `uri` (a same-named `callbackUrl` field also
+      exists but is deprecated) — this also fixed an inconsistency in the
+      original step-11 implementation, which had used `uri` for reading
+      existing subscriptions but `callbackUrl` for creating new ones.
+      New tests: `orderGid` (`graphqlMapping.test.ts`), and
+      `webhookRegistration.test.ts`'s `topicsNeedingRegistration` cases
+      extended to a 4th topic. All 51 tests pass (50 prior + 1 new); clean
+      build.
+      Live-verified in two steps, deliberately avoiding an actual refund
+      transaction against the real dev store (a genuine store mutation, not
+      something to trigger casually): (1) re-ran
+      `npm run register-webhooks -- <shop>` (with `APP_URL` pointed at the
+      real Render URL) — confirmed the 3 existing subscriptions still
+      matched as already-registered and a 4th (`refunds/create`) was newly
+      created, live on the shop. (2) Started the local dev server and
+      POSTed a hand-signed synthetic `refunds/create` payload (real HMAC
+      over `{order_id: 7912996077907}`, order #1001's real numeric id,
+      looked up via a one-off GraphQL query) at
+      `/webhooks/shopify/refunds/create` — mirrors this project's existing
+      testing pattern (steps 3/6) of hand-signing synthetic webhook bodies
+      rather than needing a real Shopify-triggered event. Got a 200, and
+      `sync_log` showed a fresh `order #1001 -> hubspotId 512948276440`
+      entry at the exact request timestamp — the same existing deal, not a
+      new one, proving the whole path (HMAC verify → merchant resolve →
+      GraphQL re-fetch by id → syncOrder → existing-record update) works
+      end to end against the real Shopify GraphQL API and real HubSpot API.
+      **Still needed**: this hasn't reached Render yet (needs the normal
+      deploy this repo already uses); the `refunds/create` subscription
+      just registered points at the production URL, so real refunds won't
+      actually reach a working handler until that deploy lands.
     - 10f. No proactive alert if a merchant revokes HubSpot access from
       inside their portal — flagged originally in step 9, still open.
     - 10g. Backfill/sync is fully sequential, no batching — fine at target
