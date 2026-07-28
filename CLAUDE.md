@@ -980,9 +980,64 @@ marketing suite or Stacksync's enterprise-scale sync.
       simultaneously) — revisit if this ever stops being a single-operator
       app, or if either secret is suspected actually compromised rather
       than just shown on-screen during debugging.
-    - 10j. No rate limiting anywhere (OAuth routes, webhook receiver,
-      `/sync-status`) — acceptable at current scale, worth knowing it's
-      absent.
+    - **10j. [DONE, VERIFIED, 2026-07-28]** No rate limiting anywhere
+      (OAuth routes, webhook receiver, `/sync-status`) — acceptable at
+      current scale, worth knowing it's absent.
+      Added `express-rate-limit` (official-ish, actively maintained,
+      minimal single dependency — rate limiting's sliding-window/IP
+      handling is exactly the kind of thing better done by a vetted
+      library than hand-rolled). New `src/rateLimit.ts` exports three
+      generous, deliberately non-strict limiters (anti-abuse/DoS
+      mitigation, not a per-user quota — legitimate traffic at this app's
+      target scale should never approach these): `oauthRateLimiter` (30 /
+      15 min), `webhookRateLimiter` (120/min), `apiRateLimiter` (60/min,
+      `/sync-status` + deal-rules CRUD).
+      `app.set('trust proxy', 1)` added to `server.ts` — required for the
+      limiter to key off real client IPs instead of Render's own proxy
+      address. Deliberately conservative on the exact hop count: community
+      reports on Render's proxy chain disagree (1 vs. 3), so this trusts
+      only the first hop — under-trusting fails safe (coarser IP grouping,
+      a usability wrinkle) where over-trusting would let a client forge
+      its own `X-Forwarded-For` to dodge the limit entirely (a real
+      bypass). Documented as a judgment call in `src/rateLimit.ts` in case
+      it needs revisiting once real multi-merchant traffic makes IP
+      granularity matter more.
+      **Real bug caught by live testing, not just code review**: the first
+      pass wired `oauthRateLimiter` via `shopifyOAuthRouter.use(...)`/
+      `hubspotOAuthRouter.use(...)` (router-level, unconditional). Since
+      both routers are mounted in `server.ts` via plain `app.use(router)`
+      with no path prefix (they "register their own absolute paths," per
+      the existing comment there), that unconditional `router.use()`
+      middleware actually ran for *every* request reaching the app —
+      including `/sync-status` — not just `/auth/*`. Worse, since both
+      files imported the same shared `oauthRateLimiter` instance, a single
+      request traversing both routers incremented its counter twice. This
+      wasn't caught by `npm run build`/`npm test` (routing behavior like
+      this has no type-level signal) — only surfaced by actually hammering
+      `/sync-status` locally and noticing the `RateLimit-Policy` response
+      header reported the *OAuth* limiter's config (30;w=900), not the API
+      one. `src/shopify/webhookRouter` didn't have this problem, because
+      it's mounted with an explicit `/webhooks/shopify` path prefix in
+      `server.ts`, correctly scoping its own router-level `.use()`.
+      Fixed by moving `oauthRateLimiter` off the router and onto each
+      individual route (`shopifyOAuthRouter.get('/auth/shopify',
+      oauthRateLimiter, ...)`, etc.) in both `src/shopify/oauth.ts` and
+      `src/hubspot/oauth.ts` — scopes it precisely regardless of how the
+      router itself is mounted upstream.
+      Verified live against the local dev server (this is inherently HTTP
+      routing behavior, not pure logic — matches how `webhooks.ts`'s own
+      routes have zero unit tests either, verified live instead): `/health`
+      unaffected by rate-limited traffic elsewhere; hammering `/sync-status`
+      65 times straight through the (buggy) first pass reproduced the bug
+      exactly (15 successes then 429, `RateLimit-Limit: 30` in the
+      response — the OAuth limiter's config leaking onto an unrelated
+      route); after the fix, 20 straight `/sync-status` calls all
+      succeeded; hammering `/auth/shopify` 35 times produced exactly 30
+      successes then 429 (matching the configured limit precisely), with
+      `/sync-status` and `/health` immediately confirmed still unaffected
+      afterward; 5 unsigned POSTs to `/webhooks/shopify/orders/create`
+      correctly 401'd on the (unrelated) HMAC check with no rate-limiting
+      interference either way. `npm run build` and all 62 tests pass.
     - **10k. [FOUND, 2026-07-28, not this app's code]** `npm audit` now
       reports 5 high-severity findings (`brace-expansion` DoS via unbounded
       expansion, no fix available), all via `ts-node-dev` → `rimraf` →

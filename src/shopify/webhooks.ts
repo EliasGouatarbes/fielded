@@ -8,8 +8,13 @@ import { deleteMerchant } from '../db/merchants';
 import { normalizeShopDomain } from './token';
 import { fetchOrderById } from './graphqlMapping';
 import { isAuthError } from '../retry';
+import { webhookRateLimiter } from '../rateLimit';
 
 export const shopifyWebhookRouter = Router();
+// Ahead of the HMAC check below deliberately — the point is to bound the
+// cost of a flood of forged requests, which the HMAC check itself doesn't
+// do for free (it's still a real crypto operation per request).
+shopifyWebhookRouter.use(webhookRateLimiter);
 
 // Every Shopify webhook is signed with SHOPIFY_API_SECRET_KEY over the raw
 // request body (see server.ts's express.json({ verify }) for how req.rawBody

@@ -7,6 +7,7 @@ import { saveShopifyToken } from '../db/merchants';
 import { normalizeShopDomain } from './token';
 import { createOAuthState, verifyOAuthState } from '../oauthState';
 import { renderPage, renderErrorPage } from '../htmlPage';
+import { oauthRateLimiter } from '../rateLimit';
 
 // Also used by server.ts's /health check (sdkLoaded) and by the utils
 // helpers below during the handshake.
@@ -73,7 +74,7 @@ function fetchShopifyAccessToken(shop: string, code: string): Promise<{ access_t
   });
 }
 
-shopifyOAuthRouter.get('/auth/shopify', (req, res) => {
+shopifyOAuthRouter.get('/auth/shopify', oauthRateLimiter, (req, res) => {
   const requestedShop =
     typeof req.query.shop === 'string'
       ? req.query.shop
@@ -99,7 +100,7 @@ shopifyOAuthRouter.get('/auth/shopify', (req, res) => {
   res.redirect(authorizeUrl.toString());
 });
 
-shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, async (req, res) => {
+shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) => {
   const { shop, code, state, hmac } = req.query;
 
   if (

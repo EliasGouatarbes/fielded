@@ -9,8 +9,13 @@ import { pool } from './db/client';
 import { getMerchant, saveDealRules, getShopsWithBrokenHubSpotConnection } from './db/merchants';
 import { getRecentSyncLog } from './db/syncLog';
 import { validateDealRules, DealRuleValidationError } from './hubspot/dealRules';
+import { TRUST_PROXY_HOPS, apiRateLimiter } from './rateLimit';
 
 const app = express();
+// Required for express-rate-limit (and any other X-Forwarded-For-based
+// logic) to see real client IPs rather than Render's own proxy address —
+// see src/rateLimit.ts for why this trusts only one hop.
+app.set('trust proxy', TRUST_PROXY_HOPS);
 app.use(
   express.json({
     // Stash the raw bytes alongside the parsed body — the webhook HMAC
@@ -113,7 +118,7 @@ async function requireAdminOrMerchantAuth(
 // (admin key, no ?shop=) gets every currently-broken shop in one call,
 // since that's the "proactive" part for a single-operator app with no
 // email/Slack integration: this is the thing to actually check.
-app.get('/sync-status', requireAdminOrMerchantAuth, async (req, res) => {
+app.get('/sync-status', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 500);
   try {
     const entries = await getRecentSyncLog(limit, req.shopDomain);
@@ -134,7 +139,7 @@ app.get('/sync-status', requireAdminOrMerchantAuth, async (req, res) => {
 // REST-only for now, no UI — merchants (or their own tooling) call this
 // directly with their per-merchant key. PUT replaces the whole ordered
 // array since rule order is semantically meaningful (first match wins).
-app.get('/merchants/:shop/deal-rules', requireAdminOrMerchantAuth, async (req, res) => {
+app.get('/merchants/:shop/deal-rules', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
   const shopDomain = normalizeShopDomain(req.params.shop);
   const merchant = await getMerchant(shopDomain);
   if (!merchant) {
@@ -144,7 +149,7 @@ app.get('/merchants/:shop/deal-rules', requireAdminOrMerchantAuth, async (req, r
   res.json({ rules: merchant.dealRules, dealPipeline: merchant.dealPipeline, dealStage: merchant.dealStage });
 });
 
-app.put('/merchants/:shop/deal-rules', requireAdminOrMerchantAuth, async (req, res) => {
+app.put('/merchants/:shop/deal-rules', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
   const shopDomain = normalizeShopDomain(req.params.shop);
   const merchant = await getMerchant(shopDomain);
   if (!merchant) {
