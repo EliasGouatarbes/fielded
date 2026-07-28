@@ -6,7 +6,7 @@ import { hubspotOAuthRouter, hashAdminApiKey } from './hubspot/oauth';
 import { shopifyWebhookRouter } from './shopify/webhooks';
 import { normalizeShopDomain } from './shopify/token';
 import { pool } from './db/client';
-import { getMerchant, saveDealRules } from './db/merchants';
+import { getMerchant, saveDealRules, getShopsWithBrokenHubSpotConnection } from './db/merchants';
 import { getRecentSyncLog } from './db/syncLog';
 import { validateDealRules, DealRuleValidationError } from './hubspot/dealRules';
 
@@ -108,11 +108,22 @@ async function requireAdminOrMerchantAuth(
 }
 
 // --- Sync-status log (CLAUDE.md step 6, made per-merchant) ---
+// Also surfaces broken HubSpot connections (10f) — a merchant-scoped
+// request gets its own hubspotConnectionBrokenAt; the operator-wide view
+// (admin key, no ?shop=) gets every currently-broken shop in one call,
+// since that's the "proactive" part for a single-operator app with no
+// email/Slack integration: this is the thing to actually check.
 app.get('/sync-status', requireAdminOrMerchantAuth, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 500);
   try {
     const entries = await getRecentSyncLog(limit, req.shopDomain);
-    res.json({ entries });
+    if (req.shopDomain) {
+      const merchant = await getMerchant(req.shopDomain);
+      res.json({ entries, hubspotConnectionBrokenAt: merchant?.hubspotConnectionBrokenAt ?? null });
+    } else {
+      const brokenConnections = await getShopsWithBrokenHubSpotConnection();
+      res.json({ entries, brokenConnections });
+    }
   } catch (err) {
     console.error('Failed to fetch sync log:', err);
     res.status(500).send('Failed to fetch sync log.');

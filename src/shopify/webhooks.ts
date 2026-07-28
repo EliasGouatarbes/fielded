@@ -7,6 +7,7 @@ import { logSyncResult, deleteSyncLogForShop, deleteSyncLogForCustomer } from '.
 import { deleteMerchant } from '../db/merchants';
 import { normalizeShopDomain } from './token';
 import { fetchOrderById } from './graphqlMapping';
+import { isAuthError } from '../retry';
 
 export const shopifyWebhookRouter = Router();
 
@@ -76,6 +77,25 @@ async function resolveMerchantOrRespond(
   }
 }
 
+// A 401/403 from HubSpot (src/retry.ts's isAuthError) means this merchant's
+// connection itself is broken — almost always a revoked HubSpot access
+// (already flagged on the merchant row by src/sync.ts's callers via
+// markHubSpotConnectionBroken). Retrying the delivery can't fix that, so
+// this acks with 200 instead of the usual 500 — otherwise Shopify would
+// keep redelivering the same doomed webhook for up to 48 hours for a
+// problem only the merchant reconnecting HubSpot can resolve. The failure
+// itself is already in sync_log either way (src/sync.ts logs before
+// rethrowing).
+function respondToSyncFailure(res: Response, err: unknown, label: string): void {
+  if (isAuthError(err)) {
+    console.error(`${label}: HubSpot connection appears revoked — acking without retry.`);
+    res.status(200).send('ok');
+    return;
+  }
+  console.error(`Failed to sync ${label} webhook:`, err);
+  res.status(500).send('Sync failed.');
+}
+
 shopifyWebhookRouter.post('/orders/create', async (req, res) => {
   const order = req.body as ShopifyOrder;
   const merchant = await resolveMerchantOrRespond(req, res, 'order', order.name);
@@ -85,8 +105,7 @@ shopifyWebhookRouter.post('/orders/create', async (req, res) => {
     await syncOrder(order, merchant);
     res.status(200).send('ok');
   } catch (err) {
-    console.error('Failed to sync orders/create webhook:', err);
-    res.status(500).send('Sync failed.');
+    respondToSyncFailure(res, err, 'orders/create');
   }
 });
 
@@ -99,8 +118,7 @@ shopifyWebhookRouter.post('/orders/updated', async (req, res) => {
     await syncOrder(order, merchant);
     res.status(200).send('ok');
   } catch (err) {
-    console.error('Failed to sync orders/updated webhook:', err);
-    res.status(500).send('Sync failed.');
+    respondToSyncFailure(res, err, 'orders/updated');
   }
 });
 
@@ -113,8 +131,7 @@ shopifyWebhookRouter.post('/customers/create', async (req, res) => {
     await syncCustomer(customer, merchant);
     res.status(200).send('ok');
   } catch (err) {
-    console.error('Failed to sync customers/create webhook:', err);
-    res.status(500).send('Sync failed.');
+    respondToSyncFailure(res, err, 'customers/create');
   }
 });
 
@@ -153,8 +170,7 @@ shopifyWebhookRouter.post('/refunds/create', async (req, res) => {
     await syncOrder(order, merchant);
     res.status(200).send('ok');
   } catch (err) {
-    console.error('Failed to sync refunds/create webhook:', err);
-    res.status(500).send('Sync failed.');
+    respondToSyncFailure(res, err, 'refunds/create');
   }
 });
 

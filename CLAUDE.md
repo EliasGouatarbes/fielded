@@ -782,8 +782,88 @@ marketing suite or Stacksync's enterprise-scale sync.
       deploy this repo already uses); the `refunds/create` subscription
       just registered points at the production URL, so real refunds won't
       actually reach a working handler until that deploy lands.
-    - 10f. No proactive alert if a merchant revokes HubSpot access from
-      inside their portal — flagged originally in step 9, still open.
+    - **10f. [DONE, VERIFIED, 2026-07-28]** No proactive alert if a merchant
+      revokes HubSpot access from inside their portal — flagged originally
+      in step 9. Explicitly scoped down before building: this app has zero
+      email/Slack infrastructure today (no dependency, no provider chosen),
+      and standing up real transactional email is a separate infra decision
+      — user chose the contained fix (detect + flag + stop pointless
+      retries, surfaced through what already exists) over adding a new
+      notification channel this pass.
+      Two distinct ways revocation actually surfaces, both now handled:
+      1. **Delayed** (up to ~30 min later): the next time this app tries to
+         refresh the HubSpot access token, HubSpot's refresh endpoint
+         rejects it with a real, verified response shape —
+         `{status: "BAD_REFRESH_TOKEN", error: "invalid_grant", ...}` —
+         confirmed by actually calling HubSpot's live token endpoint with a
+         garbage refresh token (safe: doesn't touch the real merchant's
+         actual stored token). New `HubSpotRefreshTokenRevokedError`
+         (`src/hubspot/tokens.ts`) is thrown instead of a plain Error in
+         this specific case; `classifyTokenExchangeFailure` is the pure,
+         extracted classification logic (unit-tested without a live HTTPS
+         call). `getHubSpotAccessToken` catches it and calls the new
+         `markHubSpotConnectionBroken(shopDomain)` (`src/db/merchants.ts`)
+         before rethrowing — the webhook receiver's existing
+         `resolveMerchantOrRespond` already acks any such failure with 200
+         (no code change needed there), it just wasn't flagged anywhere
+         distinct before.
+      2. **Immediate** (the far more common real-world case): a merchant
+         revokes access, but this app's currently-cached access token
+         hasn't hit its stated 30-minute expiry yet, so `resolveMerchant
+         Context` still succeeds — the failure actually happens on the very
+         next live HubSpot API call (contacts/deals), as an ordinary 401/403
+         from the SDK. New `isAuthError` (`src/retry.ts`, alongside the
+         existing `getStatusCode` it reuses — exported for this) recognizes
+         401/403 specifically (as opposed to 400 validation errors, or the
+         429/5xx `withRetry` already retries). `src/sync.ts`'s
+         `syncCustomer`/`syncOrder` catch blocks call
+         `markHubSpotConnectionBroken` on this condition; `src/shopify/
+         webhooks.ts` gained a shared `respondToSyncFailure` helper (used by
+         all four sync routes, including the new refunds/create from 10e)
+         that acks 200 instead of the usual 500 when `isAuthError` is true —
+         deliberately, since Shopify would otherwise keep redelivering the
+         same webhook for up to 48 hours for a problem only the merchant
+         reconnecting HubSpot can fix.
+      New `merchants.hubspot_connection_broken_at` column (nullable
+      TIMESTAMPTZ) — added to `ensureSchema`'s `CREATE TABLE IF NOT EXISTS`
+      for fresh environments, plus a companion `ALTER TABLE ... ADD COLUMN
+      IF NOT EXISTS` (idempotent, runs on every process start same as the
+      rest of `ensureSchema`) so it reaches the already-live Supabase table
+      without a manual one-time migration script this time. Cleared
+      automatically the moment a merchant successfully reconnects
+      (`saveHubSpotConnection` now sets it back to `NULL`).
+      Surfaced through the existing `/sync-status` endpoint rather than a
+      new one: a merchant-scoped request (`?shop=`) now returns
+      `hubspotConnectionBrokenAt`; the operator-wide view (global admin key,
+      no `?shop=`) returns a new `brokenConnections: string[]` — every
+      currently-broken shop in one call, since regularly checking that is
+      the realistic "proactive" mechanism available to a single-operator
+      app with no notification channel.
+      Verified: `npm run build` clean; new tests
+      `src/hubspot/tokens.test.ts` (`classifyTokenExchangeFailure` against
+      the real BAD_REFRESH_TOKEN shape, a different 400, and an unparseable
+      body) and `retry.test.ts` additions for `isAuthError` — 57 tests pass
+      (51 prior + 6 new). Live-verified against the real dev store without
+      ever actually touching its real HubSpot connection (revoking it for
+      real would require redoing the full OAuth handshake to undo): (1)
+      confirmed the schema change reached the live Supabase table cleanly
+      (`ensureSchema`'s `ALTER TABLE` ran with no error) and `/sync-status`
+      returns the new fields correctly (`hubspotConnectionBrokenAt: null`
+      per-shop, `brokenConnections: []` globally — the real store is
+      healthy); (2) called HubSpot's real token-refresh endpoint with a
+      garbage refresh token and confirmed `classifyTokenExchangeFailure`
+      correctly identifies HubSpot's actual live error response as
+      revoked; (3) seeded a throwaway fake merchant row (same pattern as
+      step 10a's GDPR test), confirmed `markHubSpotConnectionBroken` +
+      `getShopsWithBrokenHubSpotConnection` correctly flag and list it, then
+      confirmed `saveHubSpotConnection` (simulating a successful reconnect)
+      clears the flag and drops it from the broken list — then deleted the
+      fake row and confirmed the real dev store's row was untouched
+      throughout.
+      **Still not built, by explicit choice this pass**: an actual
+      email/Slack alert. The DB flag + `/sync-status` field are the
+      "proactive" mechanism for now; revisit if/when this app gets real
+      notification infrastructure for other reasons.
     - 10g. Backfill/sync is fully sequential, no batching — fine at target
       scale (tens–hundreds of orders/month), would be slow for a merchant
       with a large historical order count.

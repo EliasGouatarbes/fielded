@@ -1,7 +1,7 @@
 import https from 'https';
 import { Client as HubSpotClient } from '@hubspot/api-client';
 import { config } from '../config';
-import { getMerchant, saveHubSpotConnection } from '../db/merchants';
+import { getMerchant, saveHubSpotConnection, markHubSpotConnectionBroken } from '../db/merchants';
 import { withKeyedLock } from '../mutex';
 import { DealRule } from './dealRules';
 
@@ -13,6 +13,18 @@ interface HubSpotTokenResponse {
   refresh_token: string;
   expires_in: number;
 }
+
+// Thrown instead of a plain Error when HubSpot's refresh_token exchange
+// fails specifically because the merchant revoked this app's access from
+// inside their HubSpot portal — HubSpot's response body is
+// `{status: "BAD_REFRESH_TOKEN", error: "invalid_grant", ...}` in that
+// case, distinguishable from other failure modes (bad client secret,
+// transient network issues) that a retry might still recover from. Once
+// revoked there's no endpoint to un-revoke it — the merchant must redo the
+// full /auth/hubspot handshake. Distinct type lets callers (getHubSpotAccess
+// Token below, and the webhook receiver) react differently: stop retrying
+// (retrying can't fix this) and flag the merchant row instead.
+export class HubSpotRefreshTokenRevokedError extends Error {}
 
 // HubSpot's OAuth token endpoint takes form-urlencoded, not JSON (unlike
 // Shopify's — see src/shopify/oauth.ts's fetchShopifyAccessToken). Shared by
@@ -45,7 +57,7 @@ export function exchangeHubSpotToken(params: Record<string, string>): Promise<Hu
               reject(new Error(`Could not parse HubSpot token response: ${body}`));
             }
           } else {
-            reject(new Error(`HubSpot token exchange failed (${status}): ${body}`));
+            reject(classifyTokenExchangeFailure(status, body));
           }
         });
       }
@@ -54,6 +66,27 @@ export function exchangeHubSpotToken(params: Record<string, string>): Promise<Hu
     req.write(payload);
     req.end();
   });
+}
+
+// Pure classification, extracted so it's unit-testable without a live HTTPS
+// call: does this failed token-exchange response mean the refresh token was
+// specifically revoked (HubSpot's `{status: "BAD_REFRESH_TOKEN", error:
+// "invalid_grant", ...}` body), or some other failure (bad client secret,
+// malformed request, transient issue)?
+export function classifyTokenExchangeFailure(status: number, body: string): Error {
+  const parsed = tryParseJson(body);
+  if (parsed?.status === 'BAD_REFRESH_TOKEN' || parsed?.error === 'invalid_grant') {
+    return new HubSpotRefreshTokenRevokedError(`HubSpot refresh token revoked or invalid (${status}): ${body}`);
+  }
+  return new Error(`HubSpot token exchange failed (${status}): ${body}`);
+}
+
+function tryParseJson(body: string): { status?: string; error?: string } | undefined {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
 }
 
 // One-time-per-connect lookup of the portal (hub) id behind an access token
@@ -103,12 +136,20 @@ export async function getHubSpotAccessToken(shopDomain: string): Promise<string>
       return merchant.hubspotAccessToken;
     }
 
-    const refreshed = await exchangeHubSpotToken({
-      grant_type: 'refresh_token',
-      refresh_token: merchant.hubspotRefreshToken,
-      client_id: config.hubspot.clientId,
-      client_secret: config.hubspot.clientSecret,
-    });
+    let refreshed: HubSpotTokenResponse;
+    try {
+      refreshed = await exchangeHubSpotToken({
+        grant_type: 'refresh_token',
+        refresh_token: merchant.hubspotRefreshToken,
+        client_id: config.hubspot.clientId,
+        client_secret: config.hubspot.clientSecret,
+      });
+    } catch (err) {
+      if (err instanceof HubSpotRefreshTokenRevokedError) {
+        await markHubSpotConnectionBroken(shopDomain);
+      }
+      throw err;
+    }
 
     await saveHubSpotConnection(shopDomain, {
       accessToken: refreshed.access_token,

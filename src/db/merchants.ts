@@ -10,6 +10,7 @@ export interface Merchant {
   hubspotAccessToken: string | null;
   hubspotRefreshToken: string | null;
   hubspotTokenExpiresAt: Date | null;
+  hubspotConnectionBrokenAt: Date | null;
   dealPipeline: string;
   dealStage: string;
   dealRules: DealRule[];
@@ -23,6 +24,7 @@ interface MerchantRow {
   hubspot_access_token: string | null;
   hubspot_refresh_token: string | null;
   hubspot_token_expires_at: Date | null;
+  hubspot_connection_broken_at: Date | null;
   deal_pipeline: string;
   deal_stage: string;
   deal_rules: DealRule[];
@@ -37,6 +39,7 @@ function toMerchant(row: MerchantRow): Merchant {
     hubspotAccessToken: row.hubspot_access_token ? decrypt(row.hubspot_access_token, config.encryptionKey) : null,
     hubspotRefreshToken: row.hubspot_refresh_token ? decrypt(row.hubspot_refresh_token, config.encryptionKey) : null,
     hubspotTokenExpiresAt: row.hubspot_token_expires_at,
+    hubspotConnectionBrokenAt: row.hubspot_connection_broken_at,
     dealPipeline: row.deal_pipeline,
     dealStage: row.deal_stage,
     dealRules: row.deal_rules,
@@ -78,6 +81,7 @@ export async function saveHubSpotConnection(
          hubspot_token_expires_at = $4,
          hubspot_portal_id = $5,
          hubspot_connected_at = now(),
+         hubspot_connection_broken_at = NULL,
          updated_at = now()
      WHERE shop_domain = $1`,
     [
@@ -88,6 +92,30 @@ export async function saveHubSpotConnection(
       params.portalId,
     ]
   );
+}
+
+// Set when a token refresh fails specifically because the merchant revoked
+// this app's access from inside their HubSpot portal (see
+// HubSpotRefreshTokenRevokedError, src/hubspot/tokens.ts) — distinguishes
+// "needs a real reconnect" from a transient failure. Cleared automatically
+// by saveHubSpotConnection above the moment a merchant does reconnect.
+export async function markHubSpotConnectionBroken(shopDomain: string): Promise<void> {
+  await ensureSchema();
+  await pool.query(
+    `UPDATE merchants SET hubspot_connection_broken_at = now(), updated_at = now() WHERE shop_domain = $1`,
+    [shopDomain]
+  );
+}
+
+// Powers the operator-wide view on /sync-status (no ?shop=) — surfaces
+// every merchant currently needing a HubSpot reconnect in one call, rather
+// than requiring the operator to check each shop individually.
+export async function getShopsWithBrokenHubSpotConnection(): Promise<string[]> {
+  await ensureSchema();
+  const result = await pool.query<{ shop_domain: string }>(
+    'SELECT shop_domain FROM merchants WHERE hubspot_connection_broken_at IS NOT NULL ORDER BY hubspot_connection_broken_at DESC'
+  );
+  return result.rows.map((row) => row.shop_domain);
 }
 
 export async function saveDealRules(shopDomain: string, rules: DealRule[]): Promise<void> {

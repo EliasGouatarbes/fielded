@@ -1,6 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { withRetry } from './retry';
+import { withRetry, isAuthError } from './retry';
+
+test('isAuthError recognizes 401 and 403', () => {
+  assert.equal(isAuthError({ code: 401 }), true);
+  assert.equal(isAuthError({ statusCode: 403 }), true);
+});
+
+test('isAuthError rejects other status codes and non-error values', () => {
+  assert.equal(isAuthError({ code: 400 }), false);
+  assert.equal(isAuthError({ code: 429 }), false);
+  assert.equal(isAuthError({ code: 500 }), false);
+  assert.equal(isAuthError(new Error('plain')), false);
+  assert.equal(isAuthError(undefined), false);
+});
 
 test('withRetry succeeds immediately without retrying', async () => {
   let calls = 0;

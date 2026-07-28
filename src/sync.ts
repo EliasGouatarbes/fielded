@@ -3,6 +3,8 @@ import { upsertDealByName } from './hubspot/deals';
 import { evaluateDealRules } from './hubspot/dealRules';
 import { MerchantContext } from './hubspot/tokens';
 import { logSyncResult } from './db/syncLog';
+import { markHubSpotConnectionBroken } from './db/merchants';
+import { isAuthError } from './retry';
 
 // Shared between the webhook receiver (src/shopify/webhooks.ts) and the
 // historical backfill script (src/scripts/backfill.ts) — both need the exact
@@ -92,6 +94,7 @@ export async function syncCustomer(
       errorMessage: err instanceof Error ? err.message : String(err),
       shopDomain: merchant.shopDomain,
     });
+    if (isAuthError(err)) await markHubSpotConnectionBroken(merchant.shopDomain);
     throw err;
   }
 }
@@ -144,6 +147,7 @@ export async function syncOrder(order: ShopifyOrder, merchant: MerchantContext):
       errorMessage: err instanceof Error ? err.message : String(err),
       shopDomain: merchant.shopDomain,
     });
+    if (isAuthError(err)) await markHubSpotConnectionBroken(merchant.shopDomain);
     throw err;
   }
 }

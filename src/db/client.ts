@@ -34,6 +34,7 @@ export function ensureSchema(): Promise<void> {
         hubspot_refresh_token TEXT,
         hubspot_token_expires_at TIMESTAMPTZ,
         hubspot_connected_at TIMESTAMPTZ,
+        hubspot_connection_broken_at TIMESTAMPTZ,
 
         deal_pipeline TEXT NOT NULL DEFAULT '',
         deal_stage TEXT NOT NULL DEFAULT '',
@@ -57,6 +58,11 @@ export function ensureSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS sync_log_created_at_idx ON sync_log (created_at DESC);
       CREATE INDEX IF NOT EXISTS sync_log_shop_created_idx ON sync_log (shop_domain, created_at DESC);
+
+      -- Covers an already-deployed merchants table predating this column
+      -- (CREATE TABLE IF NOT EXISTS above is a no-op there) — idempotent,
+      -- safe to run on every process start same as everything else here.
+      ALTER TABLE merchants ADD COLUMN IF NOT EXISTS hubspot_connection_broken_at TIMESTAMPTZ;
     `
       )
       .then(() => undefined);

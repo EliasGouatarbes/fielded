@@ -23,12 +23,24 @@ const RETRYABLE_NODE_ERROR_CODES = new Set([
   'EPIPE',
 ]);
 
-function getStatusCode(err: unknown): number | undefined {
+export function getStatusCode(err: unknown): number | undefined {
   if (!err || typeof err !== 'object') return undefined;
   const withCode = err as { code?: unknown; statusCode?: unknown };
   if (typeof withCode.code === 'number') return withCode.code;
   if (typeof withCode.statusCode === 'number') return withCode.statusCode;
   return undefined;
+}
+
+// A 401/403 from HubSpot's API (as opposed to a 400 validation error, or a
+// 429/5xx retry.ts already retries) means this merchant's connection itself
+// is bad — almost always because they revoked this app's access from
+// inside their HubSpot portal. Used by src/sync.ts to flag that
+// (src/db/merchants.ts's markHubSpotConnectionBroken) and by
+// src/shopify/webhooks.ts to stop retrying a webhook delivery that
+// retrying can't fix.
+export function isAuthError(err: unknown): boolean {
+  const status = getStatusCode(err);
+  return status === 401 || status === 403;
 }
 
 function getRetryAfterMs(err: unknown): number | undefined {
