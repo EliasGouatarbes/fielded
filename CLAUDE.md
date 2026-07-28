@@ -950,13 +950,36 @@ marketing suite or Stacksync's enterprise-scale sync.
       anyway.
       Nothing needed on Render's side — the cert travels with the repo, no
       new env var.
-    - 10i. Credential hygiene: several real secrets (DB password, Shopify/
-      HubSpot client secrets, the admin key, the encryption key) were
-      displayed in plaintext in chat multiple times this session while
-      debugging live. Not a public leak, but worth rotating the cheap ones
-      (`ADMIN_API_KEY`, `OAUTH_STATE_SECRET`) before onboarding real
-      merchants; `ENCRYPTION_KEY`/DB password are harder to rotate
-      (need coordinated re-encryption/reconnect) so lower urgency.
+    - **10i. [DONE, VERIFIED, 2026-07-28]** Credential hygiene: several real
+      secrets (DB password, Shopify/HubSpot client secrets, the admin key,
+      the encryption key) were displayed in plaintext in chat multiple
+      times this session while debugging live. Not a public leak, but
+      worth rotating the cheap ones (`ADMIN_API_KEY`, `OAUTH_STATE_SECRET`)
+      before onboarding real merchants.
+      Generated fresh random values for both — deliberately *different*
+      values for local `.env` vs. Render, matching the existing precedent
+      for `OAUTH_STATE_SECRET` (step 9: "each environment signs its own
+      state independently, no reason they need to match"), which extends
+      naturally to `ADMIN_API_KEY` too (operator-only, no cross-environment
+      dependency). Local `.env` updated directly; user updated Render's
+      Environment tab by hand (outside this repo, no code change).
+      Verified live against the real Render deployment: `GET /sync-status`
+      with the new `ADMIN_API_KEY` returns 200; the same request with the
+      *old* key now returns 401 — confirms the rotation actually replaced
+      the old value in production rather than the new one merely being
+      added alongside it. `OAUTH_STATE_SECRET`'s rotation has no equivalent
+      external check (by design — its value isn't observable from outside
+      a live OAuth handshake), so it's taken on the user's confirmation
+      that Render's Environment tab was updated and saved (which restarts
+      the service automatically, no redeploy needed).
+      **Still lower priority, not rotated this pass** (per the original
+      finding's own reasoning): `ENCRYPTION_KEY` and the DB password are
+      harder to rotate (`ENCRYPTION_KEY` needs coordinated re-encryption of
+      every already-encrypted row; the DB password needs a coordinated
+      Supabase-side change plus updating `DATABASE_URL` everywhere
+      simultaneously) — revisit if this ever stops being a single-operator
+      app, or if either secret is suspected actually compromised rather
+      than just shown on-screen during debugging.
     - 10j. No rate limiting anywhere (OAuth routes, webhook receiver,
       `/sync-status`) — acceptable at current scale, worth knowing it's
       absent.
