@@ -1516,3 +1516,139 @@ marketing suite or Stacksync's enterprise-scale sync.
       (unchanged — this is DB-touching orchestration + client JS, out of
       scope for unit tests per the same precedent established in 12a)
       still pass.
+
+13. [DONE, VERIFIED, 2026-07-29] Full security audit, at explicit user
+    request ("Audit time... do it fully and perfectly, be thorough. Check
+    all connected apps etc. Supabase is telling me there are
+    vulnerabilities. Check everything.") — the security counterpart to
+    step 12's functional audit, covering every source file plus the app's
+    connected services (Shopify, HubSpot, Supabase/Postgres, Render), not
+    a diff. Read every file in `src/`, cross-checked claims already
+    documented in this file's step 10 (10h TLS pinning, 10i credential
+    rotation, 10j rate limiting) against the *current* code rather than
+    re-trusting them, ran `npm audit`, scanned the full git history (not
+    just current `.gitignore`) for committed secrets, and live-tested every
+    suspected issue against a locally running instance before calling
+    anything confirmed.
+
+    Two real vulnerabilities found in code, both fixed and re-verified live
+    against the actual endpoints, not just read:
+
+    - **13a. Reflected XSS**, `src/hubspot/oauth.ts` via `src/htmlPage.ts`.
+      Two sinks: `GET /auth/hubspot/callback?error=<payload>` (reflects the
+      `error`/`error_description` query params into `renderErrorPage`
+      *before* any OAuth state check runs — no valid session or prior step
+      needed at all) and `GET /auth/hubspot?shop=<payload>` (the `shop`
+      param was only ever passed through `normalizeShopDomain`, which just
+      strips a protocol prefix — unlike the Shopify OAuth flow, which
+      already validated via `shopify.utils.sanitizeShop`). Root cause:
+      `htmlPage.ts`'s `renderPage`/`renderErrorPage` never HTML-escaped
+      their interpolated strings — true everywhere else in the app only by
+      convention (every other reflected value happened to already be
+      HMAC/state-validated, a HubSpot-supplied numeric id, or
+      `crypto.randomBytes` hex), not by anything the function itself
+      enforced.
+      Confirmed exploitable before fixing: ran the dev server locally and
+      curled
+      `/auth/hubspot/callback?error=%3Cscript%3Ealert(document.domain)%3C%2Fscript%3E`
+      — got back `200`/`400` `text/html` with the raw, unescaped `<script>`
+      tag in the body. Since this is the same origin the dashboard
+      (`src/dashboardPage.ts`) stores each merchant's admin API key in
+      `localStorage` under, a real attack would be a crafted link stealing
+      that key on click, not just an `alert()`.
+      Fixed at both ends: `htmlPage.ts` gained an `escapeHtml()` helper,
+      applied unconditionally to `renderPage`'s `title` and
+      `renderErrorPage`'s `message` (every current call site of the latter
+      is plain text, never markup, confirmed by checking all call sites
+      first); and `/auth/hubspot`'s `shop` param is now run through
+      `shopify.utils.sanitizeShop` (imported from `src/shopify/oauth.ts`)
+      the same way the Shopify flow already validated its own `shop` —
+      rejecting a malformed value outright rather than only escaping it on
+      the way out.
+      Re-verified live after the fix: the same `error=` payload now comes
+      back HTML-entity-escaped (`&lt;script&gt;...`); the same `shop=`
+      payload is now rejected with a generic "That doesn't look like a
+      valid Shopify store domain." before ever reaching a template; a
+      legitimate well-formed shop domain with no merchant row still
+      correctly reaches "No Shopify installation found for
+      some-nonexistent-store.myshopify.com." — confirming the new
+      validation doesn't over-block real traffic.
+
+    - **13b. TLS certificate verification bypass in two migration
+      scripts.** `src/scripts/migrate-merchants.ts` and
+      `src/scripts/encrypt-existing-tokens.ts` each open their own
+      `pg.Pool` (deliberately not importing `src/config.ts`, since both
+      must run before every required env var necessarily exists yet — see
+      their own file comments) and had hardcoded
+      `ssl: { rejectUnauthorized: false }` — the exact MITM exposure
+      `src/db/client.ts` fixed for the running app back in 10h, never
+      applied to these two one-time scripts since they predate that fix
+      and open their own connection independently.
+      Fixed by having both read the same committed `src/db/supabase-ca.crt`
+      `src/db/client.ts` already uses and setting
+      `ssl: { ca, rejectUnauthorized: true }`. Re-ran both live against the
+      real Supabase database afterward to confirm they still connect under
+      real certificate verification, not just that they compile:
+      `npm run migrate-merchants` completed normally ("merchants table
+      already exists, skipping rename" — idempotent, matching its
+      documented behavior); `npm run encrypt-existing-tokens` reported the
+      one existing row "already encrypted, skipping" (also idempotent, per
+      10i's original verification of this same script).
+
+    Also found, fixed directly in the database rather than in code: the
+    user's own report that "Supabase is telling me there are
+    vulnerabilities" turned out to be Supabase's Security Advisor flagging
+    exactly this. Checked directly against the live database rather than
+    guessing from the app's connection style alone (this app never uses
+    Supabase's PostgREST/Data API, only a direct `pg` connection, which
+    made it tempting to assume RLS wasn't the actual mechanism) — first
+    hypothesis (RLS disabled entirely on `merchants`/`sync_log`) turned out
+    to be wrong on inspection: the user had already manually enabled RLS on
+    both tables before this was checked. What was still live: RLS enabled
+    with zero policies defined, but `anon` and `authenticated` still held
+    full SELECT/INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER grants on
+    both tables (Supabase's default at table-creation time) — currently
+    inert only because Postgres's RLS-enabled-with-no-policy default-denies
+    every non-owner role, meaning a single future policy added by anyone
+    (including Supabase's own tooling) would have made all of those grants
+    live instantly. `REVOKE ALL PRIVILEGES ON TABLE merchants, sync_log
+    FROM anon, authenticated` run directly against the live database,
+    confirmed empty via `information_schema.role_table_grants` afterward.
+    Verified the app itself is unaffected (connects as the `postgres` table
+    owner, whose access doesn't depend on these grants or on RLS at all):
+    `/health` still reports `database.connected: true` after the revoke.
+
+    `npm audit` reconfirmed unchanged from 10k/12's prior runs: 5 high
+    findings, all transitively through `ts-node-dev` -> `rimraf` -> `glob`
+    -> `minimatch` -> `brace-expansion`, no fix available upstream,
+    dev-only (`npm run dev`), never in the `build`/`start` production path.
+    Full git history (not just current `.gitignore`) scanned for
+    committed secrets — clean, matching 10i's original finding.
+
+    `npm run build` clean; all 72 tests still pass (unchanged — none of
+    this pass's fixes touched anything with existing pure-logic coverage;
+    the XSS fix's own correctness was proven live per above, matching this
+    project's established precedent for routing/output-rendering changes
+    over unit tests, e.g. 10j, 12a).
+
+    Checked and confirmed NOT vulnerable, beyond what step 10 already
+    documented: every SQL query across `src/db/`, `src/scripts/
+    migrate-merchants.ts`, and `src/scripts/encrypt-existing-tokens.ts` is
+    parameterized, no exceptions; the dashboard's client-side JS
+    (`src/dashboardPage.ts`) really does use exclusively
+    `createElement`/`textContent` with zero `innerHTML` given dynamic data,
+    confirmed by grep across the whole `src/` tree (the one `innerHTML`
+    hit found is `keyFormEl.innerHTML = ''`, a clear-only assignment, not
+    an injection point); no `eval`/`child_process`/`dangerouslySetInnerHTML`
+    anywhere in the codebase; no CORS headers set anywhere (correct default
+    for this app — nothing here needs cross-origin reads); HubSpot/Shopify
+    OAuth state signing, webhook HMAC verification, and every admin/merchant
+    key comparison in `src/server.ts` all still timing-safe, re-confirmed
+    directly against current code rather than assumed from step 10's
+    original write-up.
+
+    Committed as `ef1aee2` ("Fix reflected XSS in HubSpot OAuth error
+    pages, pin TLS on migration scripts") and pushed to `main` — Render
+    redeploys automatically from there per the existing Blueprint setup;
+    the Supabase grants fix needed no deploy, already live directly against
+    the database.
