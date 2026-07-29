@@ -225,7 +225,7 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
         <p class="muted">Check sync status any time with:</p>
         <pre>curl -H "Authorization: Bearer ${key}" "${config.server.appUrl}/sync-status?shop=${encodeURIComponent(shop)}"</pre>
         <p class="muted">Lost this key later? Reconnect HubSpot at
-        <code>${config.server.appUrl}/auth/hubspot?shop=${encodeURIComponent(shop)}&regenerate_key=1</code> to get a new one.</p>`;
+        <code>${config.server.appUrl}/auth/hubspot?shop=${encodeURIComponent(shop)}&amp;regenerate_key=1</code> to get a new one.</p>`;
     }
 
     const webhookChecklistItem = webhooksRegistered
