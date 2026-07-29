@@ -2,13 +2,15 @@ import crypto from 'crypto';
 import express from 'express';
 import { config } from './config';
 import { shopify, shopifyOAuthRouter } from './shopify/oauth';
-import { hubspotOAuthRouter, hashAdminApiKey } from './hubspot/oauth';
+import { hubspotOAuthRouter, hashAdminApiKey, generateAndStoreAdminApiKey } from './hubspot/oauth';
 import { shopifyWebhookRouter } from './shopify/webhooks';
 import { normalizeShopDomain } from './shopify/token';
 import { pool } from './db/client';
 import { getMerchant, saveDealRules, getShopsWithBrokenHubSpotConnection } from './db/merchants';
 import { getRecentSyncLog } from './db/syncLog';
 import { validateDealRules, DealRuleValidationError } from './hubspot/dealRules';
+import { registerWebhooksForShop, getWebhookRegistrationStatus } from './shopify/webhookRegistration';
+import { renderDashboardPage } from './dashboardPage';
 import { TRUST_PROXY_HOPS, apiRateLimiter } from './rateLimit';
 
 const app = express();
@@ -59,6 +61,14 @@ app.get('/health', async (_req, res) => {
       connected: dbConnected,
     },
   });
+});
+
+// --- Merchant dashboard (closes the "no UI after onboarding" gap found in
+// the functional audit) --- Static shell; all auth and data-loading happens
+// client-side against the JSON endpoints below, so no server-side session
+// and no request data is ever interpolated into this response.
+app.get('/dashboard', (_req, res) => {
+  res.type('html').send(renderDashboardPage());
 });
 
 // --- OAuth handshakes (CLAUDE.md multi-merchant step) ---
@@ -169,6 +179,73 @@ app.put('/merchants/:shop/deal-rules', apiRateLimiter, requireAdminOrMerchantAut
     console.error('Failed to save deal rules:', err);
     res.status(500).send('Failed to save deal rules.');
   }
+});
+
+// --- Dashboard data/action endpoints — same auth/rate-limit stack as the
+// deal-rules routes above, consumed by src/dashboardPage.ts's client-side JS.
+app.get('/merchants/:shop/status', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+  const shopDomain = normalizeShopDomain(req.params.shop);
+  const merchant = await getMerchant(shopDomain);
+  if (!merchant) {
+    res.status(404).send('Unknown merchant.');
+    return;
+  }
+
+  let webhooks: Array<{ topic: string; registered: boolean }> | null = null;
+  let webhooksError: string | undefined;
+  try {
+    webhooks = await getWebhookRegistrationStatus(shopDomain);
+  } catch (err) {
+    webhooksError = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to fetch webhook status for ${shopDomain}:`, err);
+  }
+
+  res.json({
+    shopDomain: merchant.shopDomain,
+    hubspotPortalId: merchant.hubspotPortalId,
+    hubspotConnectionBrokenAt: merchant.hubspotConnectionBrokenAt,
+    dealPipeline: merchant.dealPipeline,
+    dealStage: merchant.dealStage,
+    webhooks,
+    webhooksError,
+  });
+});
+
+app.post('/merchants/:shop/retry-webhooks', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+  const shopDomain = normalizeShopDomain(req.params.shop);
+  const merchant = await getMerchant(shopDomain);
+  if (!merchant) {
+    res.status(404).send('Unknown merchant.');
+    return;
+  }
+
+  try {
+    await registerWebhooksForShop(shopDomain);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(`Retry webhook registration failed for ${shopDomain}:`, err);
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Distinct from the ?regenerate_key=1 HubSpot-reconnect recovery path in
+// src/hubspot/oauth.ts (for a merchant who lost their key entirely) — this
+// is for a merchant who still has a valid key and wants to rotate it, so it
+// only needs the same bearer-key auth every other merchant-scoped route
+// already requires, not a full OAuth round-trip.
+app.post('/merchants/:shop/admin-key/regenerate', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+  const shopDomain = normalizeShopDomain(req.params.shop);
+  const merchant = await getMerchant(shopDomain);
+  if (!merchant) {
+    res.status(404).send('Unknown merchant.');
+    return;
+  }
+
+  const adminApiKey = await generateAndStoreAdminApiKey(shopDomain);
+  res.json({
+    adminApiKey,
+    note: 'Save this now — it will not be shown again. Your previous key no longer works.',
+  });
 });
 
 app.listen(config.server.port, () => {

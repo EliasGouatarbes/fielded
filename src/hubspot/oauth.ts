@@ -26,6 +26,18 @@ export function hashAdminApiKey(key: string): string {
   return crypto.createHash('sha256').update(key).digest('hex');
 }
 
+// Mints a fresh per-merchant admin key and persists only its hash — shared
+// by the OAuth callback below (first-connect or ?regenerate_key=1 recovery)
+// and the dashboard's POST /merchants/:shop/admin-key/regenerate
+// (src/server.ts), which is the *other* rotation path: for a merchant who
+// still has a valid key and wants a new one, authenticated by that existing
+// key rather than a full HubSpot reconnect.
+export async function generateAndStoreAdminApiKey(shopDomain: string): Promise<string> {
+  const key = crypto.randomBytes(24).toString('hex');
+  await saveAdminApiKeyHash(shopDomain, hashAdminApiKey(key));
+  return key;
+}
+
 // A merchant reaches this only after finishing the Shopify install (linked
 // from that callback's success page) — requiring the merchants row to
 // already exist here is what lets /auth/hubspot/callback trust the shop
@@ -158,10 +170,11 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
     // reconnect with ?regenerate_key=1 (the recovery path for a merchant who
     // lost theirs — there's no other way back in, since only the hash is
     // ever stored). Shown exactly once here, never retrievable again.
+    const dashboardUrl = `/dashboard?shop=${encodeURIComponent(shop)}`;
+
     let advancedHtml = '';
     if (!merchant.adminApiKeyHash || regenerateAdminKey) {
-      const key = crypto.randomBytes(24).toString('hex');
-      await saveAdminApiKeyHash(shop, hashAdminApiKey(key));
+      const key = await generateAndStoreAdminApiKey(shop);
       const regeneratedNote = regenerateAdminKey
         ? '<p>This replaces your previous key — that one no longer works.</p>'
         : '';
@@ -173,6 +186,7 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
           <p><strong>Save this key now — it will not be shown again:</strong></p>
           <pre>${key}</pre>
           ${regeneratedNote}
+          <p>You'll need this same key to sign in on your <a href="${dashboardUrl}">dashboard</a> — paste it there once and it's remembered on this browser.</p>
         </div>
         <p class="muted">Check sync status any time with:</p>
         <pre>curl -H "Authorization: Bearer ${key}" "${config.server.appUrl}/sync-status?shop=${encodeURIComponent(shop)}"</pre>
@@ -187,7 +201,7 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
     const webhookWarningHtml = webhooksRegistered
       ? ''
       : `<div class="warning"><strong>Heads up:</strong> automatic webhook registration failed, so new orders
-        won't sync yet. Retry with <code>npm run register-webhooks -- ${shop}</code>, or contact support.</div>`;
+        won't sync yet. Retry it from your <a href="${dashboardUrl}">dashboard</a> once you've signed in with the key below.</div>`;
 
     const headline = webhooksRegistered ? "Step 2 of 2 &mdash; You're all set 🎉" : 'Step 2 of 2 &mdash; Almost there';
 
@@ -207,6 +221,7 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
         as <strong>Contacts</strong> and <strong>Deals</strong> — not HubSpot's native Orders object, so your existing
         pipelines, lists, and reports keep working. Historical import can take a few minutes depending on how much
         order history this store has.</p>
+        <a class="btn" href="${dashboardUrl}">View your dashboard &rarr;</a>
         ${advancedHtml}`
       )
     );

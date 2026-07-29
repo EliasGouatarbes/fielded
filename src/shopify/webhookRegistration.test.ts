@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { topicsNeedingRegistration } from './webhookRegistration';
+import { topicsNeedingRegistration, deriveWebhookStatus } from './webhookRegistration';
 
 const TOPICS = ['orders/create', 'orders/updated', 'customers/create', 'refunds/create'];
 const TOPIC_TO_GRAPHQL_ENUM: Record<string, string> = {
@@ -55,4 +55,45 @@ test('topicsNeedingRegistration treats a matching topic with a different uri as 
 
   const missing = topicsNeedingRegistration(existing, TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
   assert.ok(missing.some((m) => m.topic === 'orders/create'));
+});
+
+test('deriveWebhookStatus reports every topic unregistered when nothing exists', () => {
+  const status = deriveWebhookStatus([], TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
+  assert.deepEqual(status, TOPICS.map((topic) => ({ topic, registered: false })));
+});
+
+test('deriveWebhookStatus reports every topic registered when all match', () => {
+  const existing = TOPICS.map((topic, i) => ({
+    id: `gid://shopify/WebhookSubscription/${i}`,
+    topic: TOPIC_TO_GRAPHQL_ENUM[topic],
+    uri: `${APP_URL}/webhooks/shopify/${topic}`,
+  }));
+
+  const status = deriveWebhookStatus(existing, TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
+  assert.deepEqual(status, TOPICS.map((topic) => ({ topic, registered: true })));
+});
+
+test('deriveWebhookStatus reports a mix on partial overlap', () => {
+  const existing = [
+    { id: 'gid://shopify/WebhookSubscription/1', topic: 'ORDERS_CREATE', uri: `${APP_URL}/webhooks/shopify/orders/create` },
+    { id: 'gid://shopify/WebhookSubscription/2', topic: 'CUSTOMERS_CREATE', uri: `${APP_URL}/webhooks/shopify/customers/create` },
+  ];
+
+  const status = deriveWebhookStatus(existing, TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
+  assert.deepEqual(status, [
+    { topic: 'orders/create', registered: true },
+    { topic: 'orders/updated', registered: false },
+    { topic: 'customers/create', registered: true },
+    { topic: 'refunds/create', registered: false },
+  ]);
+});
+
+test('deriveWebhookStatus treats a stale registration (wrong uri) as not registered', () => {
+  const existing = [
+    { id: 'gid://shopify/WebhookSubscription/1', topic: 'ORDERS_CREATE', uri: 'https://old-url.example.com/webhooks/shopify/orders/create' },
+  ];
+
+  const status = deriveWebhookStatus(existing, TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
+  const ordersCreate = status.find((s) => s.topic === 'orders/create');
+  assert.equal(ordersCreate?.registered, false);
 });

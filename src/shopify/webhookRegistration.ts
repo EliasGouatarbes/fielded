@@ -82,13 +82,9 @@ export function topicsNeedingRegistration(
     .filter(({ graphqlTopic, address }) => !existing.some((w) => w.topic === graphqlTopic && w.uri === address));
 }
 
-export async function registerWebhooksForShop(shop: string): Promise<void> {
-  if (!config.server.appUrl.startsWith('https://')) {
-    throw new Error(
-      `APP_URL must be a real https:// URL for Shopify to call — got "${config.server.appUrl}".`
-    );
-  }
-
+// Shared by registerWebhooksForShop (below) and getWebhookRegistrationStatus
+// — one GraphQL call site instead of two.
+async function listExistingSubscriptions(shop: string): Promise<ShopifyWebhookNode[]> {
   const graphqlTopics = TOPICS.map((topic) => TOPIC_TO_GRAPHQL_ENUM[topic]);
   const listData = await shopifyGraphqlRequest<WebhookSubscriptionsData>(
     shop,
@@ -96,7 +92,44 @@ export async function registerWebhooksForShop(shop: string): Promise<void> {
     { topics: graphqlTopics },
     'Shopify list webhook subscriptions'
   );
-  const existing = listData.webhookSubscriptions.edges.map((edge) => edge.node);
+  return listData.webhookSubscriptions.edges.map((edge) => edge.node);
+}
+
+// Pure, unit-testable: which of `topics` are already registered? Reuses
+// topicsNeedingRegistration's own match logic (a topic is "registered" iff
+// it's NOT in that function's "missing" output) so the two can't drift
+// apart. Powers the dashboard's status view (src/server.ts's
+// GET /merchants/:shop/status) — a stale registration (topic present but
+// pointing at an old address) correctly shows as not registered, same as
+// topicsNeedingRegistration already treats it as needing re-creation.
+export function deriveWebhookStatus(
+  existing: ShopifyWebhookNode[],
+  topics: string[],
+  appUrl: string,
+  topicToEnum: Record<string, string>
+): Array<{ topic: string; registered: boolean }> {
+  const missing = new Set(topicsNeedingRegistration(existing, topics, appUrl, topicToEnum).map((m) => m.topic));
+  return topics.map((topic) => ({ topic, registered: !missing.has(topic) }));
+}
+
+// Read-only status check — unlike registerWebhooksForShop, this has no
+// APP_URL-must-be-https guard, since it needs to work (and report the true
+// mismatch) in local dev too.
+export async function getWebhookRegistrationStatus(
+  shop: string
+): Promise<Array<{ topic: string; registered: boolean }>> {
+  const existing = await listExistingSubscriptions(shop);
+  return deriveWebhookStatus(existing, TOPICS, config.server.appUrl, TOPIC_TO_GRAPHQL_ENUM);
+}
+
+export async function registerWebhooksForShop(shop: string): Promise<void> {
+  if (!config.server.appUrl.startsWith('https://')) {
+    throw new Error(
+      `APP_URL must be a real https:// URL for Shopify to call — got "${config.server.appUrl}".`
+    );
+  }
+
+  const existing = await listExistingSubscriptions(shop);
 
   const missing = topicsNeedingRegistration(existing, TOPICS, config.server.appUrl, TOPIC_TO_GRAPHQL_ENUM);
   const missingTopics = new Set(missing.map((m) => m.topic));
