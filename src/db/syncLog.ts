@@ -4,7 +4,11 @@ export type SyncEntityType = 'customer' | 'order';
 // 'skipped' (12d, functional audit): a legitimate, expected non-sync — e.g.
 // a customer with no email — distinct from 'error' (something went wrong)
 // so it doesn't read as a failure in the dashboard's activity feed.
-export type SyncStatus = 'success' | 'error' | 'skipped';
+// 'deleted' (12g, functional audit): the Shopify order/customer itself was
+// deleted — logged for visibility, but (deliberately, matching the
+// customers/redact GDPR handler's own precedent) never means the
+// corresponding HubSpot Deal/Contact was touched.
+export type SyncStatus = 'success' | 'error' | 'skipped' | 'deleted';
 
 export interface SyncLogEntry {
   entityType: SyncEntityType;

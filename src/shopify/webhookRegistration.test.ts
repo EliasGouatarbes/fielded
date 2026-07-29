@@ -2,16 +2,25 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { topicsNeedingRegistration, deriveWebhookStatus } from './webhookRegistration';
 
-const TOPICS = ['orders/create', 'orders/updated', 'customers/create', 'refunds/create'];
+const TOPICS = [
+  'orders/create',
+  'orders/updated',
+  'customers/create',
+  'refunds/create',
+  'orders/delete',
+  'customers/delete',
+];
 const TOPIC_TO_GRAPHQL_ENUM: Record<string, string> = {
   'orders/create': 'ORDERS_CREATE',
   'orders/updated': 'ORDERS_UPDATED',
   'customers/create': 'CUSTOMERS_CREATE',
   'refunds/create': 'REFUNDS_CREATE',
+  'orders/delete': 'ORDERS_DELETE',
+  'customers/delete': 'CUSTOMERS_DELETE',
 };
 const APP_URL = 'https://hubshop.onrender.com';
 
-test('topicsNeedingRegistration returns nothing when all 4 topics are already registered', () => {
+test('topicsNeedingRegistration returns nothing when all 6 topics are already registered', () => {
   const existing = TOPICS.map((topic, i) => ({
     id: `gid://shopify/WebhookSubscription/${i}`,
     topic: TOPIC_TO_GRAPHQL_ENUM[topic],
@@ -22,18 +31,16 @@ test('topicsNeedingRegistration returns nothing when all 4 topics are already re
   assert.deepEqual(missing, []);
 });
 
-test('topicsNeedingRegistration returns all 4 topics with correct enum + address when none are registered', () => {
+test('topicsNeedingRegistration returns all 6 topics with correct enum + address when none are registered', () => {
   const missing = topicsNeedingRegistration([], TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
-  assert.deepEqual(missing, [
-    { topic: 'orders/create', graphqlTopic: 'ORDERS_CREATE', address: `${APP_URL}/webhooks/shopify/orders/create` },
-    { topic: 'orders/updated', graphqlTopic: 'ORDERS_UPDATED', address: `${APP_URL}/webhooks/shopify/orders/updated` },
-    {
-      topic: 'customers/create',
-      graphqlTopic: 'CUSTOMERS_CREATE',
-      address: `${APP_URL}/webhooks/shopify/customers/create`,
-    },
-    { topic: 'refunds/create', graphqlTopic: 'REFUNDS_CREATE', address: `${APP_URL}/webhooks/shopify/refunds/create` },
-  ]);
+  assert.deepEqual(
+    missing,
+    TOPICS.map((topic) => ({
+      topic,
+      graphqlTopic: TOPIC_TO_GRAPHQL_ENUM[topic],
+      address: `${APP_URL}/webhooks/shopify/${topic}`,
+    }))
+  );
 });
 
 test('topicsNeedingRegistration returns only the missing topics on partial overlap', () => {
@@ -44,7 +51,7 @@ test('topicsNeedingRegistration returns only the missing topics on partial overl
   const missing = topicsNeedingRegistration(existing, TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
   assert.deepEqual(
     missing.map((m) => m.topic),
-    ['orders/updated', 'customers/create', 'refunds/create']
+    ['orders/updated', 'customers/create', 'refunds/create', 'orders/delete', 'customers/delete']
   );
 });
 
@@ -85,6 +92,8 @@ test('deriveWebhookStatus reports a mix on partial overlap', () => {
     { topic: 'orders/updated', registered: false },
     { topic: 'customers/create', registered: true },
     { topic: 'refunds/create', registered: false },
+    { topic: 'orders/delete', registered: false },
+    { topic: 'customers/delete', registered: false },
   ]);
 });
 

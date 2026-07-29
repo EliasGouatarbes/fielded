@@ -11,8 +11,19 @@ import { shopifyGraphqlRequest } from './admin-graphql';
 // refunded order's Deal kept its pre-refund amount/stage indefinitely on
 // the live webhook path (the historical backfill already picks refunds up
 // via GraphQL's currentTotalPriceSet, but a merchant shouldn't have to wait
-// for a backfill re-run).
-const TOPICS = ['orders/create', 'orders/updated', 'customers/create', 'refunds/create'];
+// for a backfill re-run). orders/delete + customers/delete close 12g
+// (functional audit): without them, deleting an order/customer in Shopify
+// left the corresponding HubSpot Deal/Contact orphaned with zero
+// indication anything changed — see src/shopify/webhooks.ts for what these
+// two actually do (log only, deliberately never touch the HubSpot record).
+const TOPICS = [
+  'orders/create',
+  'orders/updated',
+  'customers/create',
+  'refunds/create',
+  'orders/delete',
+  'customers/delete',
+];
 
 // GraphQL's WebhookSubscriptionTopic enum, one per entry in TOPICS above —
 // TOPICS itself stays REST-style (e.g. "orders/create") since it also drives
@@ -23,6 +34,8 @@ const TOPIC_TO_GRAPHQL_ENUM: Record<string, string> = {
   'orders/updated': 'ORDERS_UPDATED',
   'customers/create': 'CUSTOMERS_CREATE',
   'refunds/create': 'REFUNDS_CREATE',
+  'orders/delete': 'ORDERS_DELETE',
+  'customers/delete': 'CUSTOMERS_DELETE',
 };
 
 interface ShopifyWebhookNode {

@@ -296,7 +296,8 @@ export function renderDashboardPage(): string {
       });
       var statusTd = document.createElement('td');
       var badge = document.createElement('span');
-      var badgeClass = entry.status === 'success' ? 'badge-ok' : (entry.status === 'skipped' ? 'badge-neutral' : 'badge-bad');
+      var neutralStatus = entry.status === 'skipped' || entry.status === 'deleted';
+      var badgeClass = entry.status === 'success' ? 'badge-ok' : (neutralStatus ? 'badge-neutral' : 'badge-bad');
       badge.className = 'badge ' + badgeClass;
       badge.textContent = entry.status;
       statusTd.appendChild(badge);

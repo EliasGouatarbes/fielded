@@ -179,6 +179,55 @@ shopifyWebhookRouter.post('/refunds/create', async (req, res) => {
   }
 });
 
+// Closes 12g (functional audit): deleting an order/customer directly in
+// Shopify previously left the corresponding HubSpot Deal/Contact orphaned
+// with zero indication anything had changed. Deliberately log-only, never
+// touching the HubSpot record — matches this app's own precedent in the
+// customers/redact GDPR handler below, where auto-deleting a merchant's
+// CRM record based on a Shopify-side signal alone was judged "a bigger
+// call than this webhook should make unilaterally." A merchant reviewing
+// the dashboard's activity feed at least sees the deletion happened, even
+// though nothing was done about it automatically. The delete payload only
+// ever carries a numeric id (the order/customer is already gone, so
+// there's nothing else to fetch) — logged as-is rather than trying to
+// resolve it back to a dealname/email, which nothing in this app has a
+// stored mapping for.
+interface DeletePayload {
+  id?: number;
+}
+
+shopifyWebhookRouter.post('/orders/delete', async (req, res) => {
+  const { id: orderId } = req.body as DeletePayload;
+  const shopifyId = orderId != null ? String(orderId) : 'unknown';
+  const merchant = await resolveMerchantOrRespond(req, res, 'order', shopifyId);
+  if (!merchant) return;
+
+  await logSyncResult({
+    entityType: 'order',
+    shopifyId,
+    status: 'deleted',
+    errorMessage: 'This order was deleted in Shopify. Its HubSpot Deal (if any) was not modified — review manually if needed.',
+    shopDomain: merchant.shopDomain,
+  });
+  res.status(200).send('ok');
+});
+
+shopifyWebhookRouter.post('/customers/delete', async (req, res) => {
+  const { id: customerId } = req.body as DeletePayload;
+  const shopifyId = customerId != null ? String(customerId) : 'unknown';
+  const merchant = await resolveMerchantOrRespond(req, res, 'customer', shopifyId);
+  if (!merchant) return;
+
+  await logSyncResult({
+    entityType: 'customer',
+    shopifyId,
+    status: 'deleted',
+    errorMessage: 'This customer was deleted in Shopify. Their HubSpot Contact (if any) was not modified — review manually if needed.',
+    shopDomain: merchant.shopDomain,
+  });
+  res.status(200).send('ok');
+});
+
 // --- Shopify's three mandatory GDPR compliance webhooks ---
 // Required for every public Shopify app regardless of what data it stores;
 // app review checks for these. Unlike the three routes above, these must

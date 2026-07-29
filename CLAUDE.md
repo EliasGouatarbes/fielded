@@ -1283,13 +1283,63 @@ marketing suite or Stacksync's enterprise-scale sync.
         store's admin key has been rotated as a result; current value
         recorded outside this file, not printed in chat per 10i's
         credential-hygiene finding.
-      **Still open from this audit** (tracked here, not yet started): 12g
-      (no `orders/delete`/`customers/delete` webhook handling — orphaned
-      HubSpot records on a Shopify-side delete). Explicitly re-confirmed as
-      still-accepted, not re-opened by this audit: no `app/uninstalled`
-      handler (bounded by `shop/redact`'s 48h window, 10b), no real
-      email/Slack alert for a broken HubSpot connection (10f), and the
-      `ts-node-dev` `npm audit` finding (10k, dev-only, no fix available).
+      **Everything from this audit's punch list is now done** (12a-12g).
+      Explicitly re-confirmed as still-accepted, not re-opened by this
+      audit: no `app/uninstalled` handler (bounded by `shop/redact`'s 48h
+      window, 10b), no real email/Slack alert for a broken HubSpot
+      connection (10f), and the `ts-node-dev` `npm audit` finding (10k,
+      dev-only, no fix available). Billing/monetization and the privacy
+      policy were deliberately deferred by the user, to be handled together
+      right before going live — not part of this punch list.
+    - **12g. [DONE, VERIFIED, 2026-07-29]** No `orders/delete`/
+      `customers/delete` webhook handling — deleting an order/customer
+      directly in Shopify left the corresponding HubSpot Deal/Contact
+      orphaned with zero indication anything had changed.
+      Explicit design choice confirmed with the user first, since it cuts
+      both ways and is hard to reverse either way: log the deletion for
+      visibility, but never auto-touch the HubSpot record — matching this
+      app's own existing precedent in the `customers/redact` GDPR handler,
+      where the same call was already made ("deleting a merchant's CRM
+      record... is a bigger call than this webhook should make
+      unilaterally"). The alternative (auto-archiving the Deal/Contact)
+      was explicitly considered and rejected — a merchant's CRM data
+      (notes, activity history) could vanish for what they thought was a
+      routine Shopify-side cleanup.
+      Added `orders/delete`/`customers/delete` to
+      `src/shopify/webhookRegistration.ts`'s subscribed topics (verified
+      the exact `WebhookSubscriptionTopic` GraphQL enum values —
+      `ORDERS_DELETE`/`CUSTOMERS_DELETE` — against Shopify's docs before
+      wiring them in, since a wrong enum value in the shared `$topics`
+      array would have broken registration for all 6 topics at once, not
+      just these two; both only require scopes this app already has,
+      `read_orders`/`read_customers`, no new OAuth scope changes needed).
+      New routes in `src/shopify/webhooks.ts` log a new `SyncStatus` value,
+      `'deleted'` (`src/db/syncLog.ts`), keyed by whatever numeric id
+      Shopify's delete payload provides — deliberately not trying to
+      resolve it back to a dealname/email, since nothing in this app
+      stores a mapping from a Shopify numeric order/customer id to its
+      HubSpot record (the order/customer is already gone by the time the
+      webhook arrives, so it can't be re-fetched either, unlike
+      `refunds/create`'s re-fetch approach). Dashboard (12a) renders
+      `'deleted'` with the same neutral badge as `'skipped'` — informational,
+      not a failure.
+      Updated `src/shopify/webhookRegistration.test.ts`'s fixtures from 4
+      to 6 topics throughout, matching the established pattern from 10e's
+      similar update. 72 tests pass (unchanged — no new pure logic here
+      beyond what the existing `topicsNeedingRegistration`/
+      `deriveWebhookStatus` tests already cover generically); clean build.
+      Live-verified against the real dev store: re-ran
+      `npm run register-webhooks` — the 4 existing topics stayed
+      untouched, both new ones registered fresh, confirmed via a direct
+      status check that all 6 now show `registered: true`. Hand-signed
+      synthetic `orders/delete`/`customers/delete` webhooks (same low-risk
+      pattern as 12d/12e) both returned 200 and produced the expected
+      `sync_log` entries — `status: 'deleted'`, correct numeric id, the
+      right explanatory message — confirmed via a direct query that
+      neither call touched HubSpot at all (no API calls in that code path
+      to begin with). Playwright screenshot of the dashboard's activity
+      feed confirms both render with the neutral badge, consistent with
+      `'skipped'`.
     - **12f. [DONE, VERIFIED, 2026-07-29]** No `.env.example` existed
       despite `config.ts`'s own missing-required-var error message pointing
       new setups at one ("Copy .env.example to .env and fill these in
