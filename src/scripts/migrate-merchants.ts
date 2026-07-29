@@ -11,15 +11,24 @@
 // is a pure database operation that only needs DATABASE_URL, and must be
 // runnable before those HubSpot OAuth env vars exist yet.
 import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
 import { Pool } from 'pg';
 
 if (!process.env.DATABASE_URL) {
   throw new Error('Missing DATABASE_URL.');
 }
 
+// Was `rejectUnauthorized: false` — the same MITM exposure src/db/client.ts
+// fixed for the running app (pre-launch security audit's 10h), never
+// applied here since this script deliberately opens its own Pool instead of
+// importing that module. Reuses the same committed CA cert (not a secret,
+// same reasoning as client.ts).
+const SUPABASE_CA_CERT = fs.readFileSync(path.join(__dirname, '../db/supabase-ca.crt'), 'utf8');
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: { ca: SUPABASE_CA_CERT, rejectUnauthorized: true },
 });
 
 async function columnExists(table: string, column: string): Promise<boolean> {

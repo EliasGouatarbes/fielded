@@ -6,6 +6,23 @@
 // goes wrong too, not only after.
 const SUPPORT_EMAIL = 'elias.gouatarbes@gmail.com';
 
+// Every current call site of renderPage/renderErrorPage passes either a
+// static string or a value already validated/derived from a trusted source
+// (see src/shopify/oauth.ts's sanitizeShop, HubSpot's own numeric portal id,
+// crypto.randomBytes hex keys) — but that was an invariant enforced by
+// convention, not by this function, and it broke once (src/hubspot/oauth.ts
+// reflected an unvalidated `shop`/`error` query param into renderErrorPage —
+// found in the pre-launch security audit). Escaping here makes the shell
+// itself safe regardless of what a future call site passes in.
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export interface RenderPageOptions {
   // The onboarding pages (src/shopify/oauth.ts, src/hubspot/oauth.ts) fit
   // comfortably in the default 560px card. The dashboard (src/dashboardPage.ts)
@@ -28,7 +45,7 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title}</title>
+<title>${escapeHtml(title)}</title>
 <style>
   :root { color-scheme: light dark; }
   body {
@@ -134,10 +151,14 @@ ${bodyHtml}
 </html>`;
 }
 
+// `message` is always plain text at every current call site (never HTML
+// markup) — escaped unconditionally since some callers build it directly
+// from request query params (src/hubspot/oauth.ts's `shop`/`error`), which
+// must never be trusted to reach the page unescaped.
 export function renderErrorPage(message: string): string {
   return renderPage(
     'Connection failed',
     `<h1>⚠️ Couldn't complete the connection</h1>
-    <p>${message}</p>`
+    <p>${escapeHtml(message)}</p>`
   );
 }

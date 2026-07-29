@@ -12,6 +12,8 @@
 // database — `npm run encrypt-existing-tokens` — before deploying the
 // encrypt/decrypt code in src/db/merchants.ts.
 import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
 import { Pool } from 'pg';
 import { encrypt, looksEncrypted, parseEncryptionKey } from '../crypto';
 
@@ -22,10 +24,17 @@ if (!process.env.ENCRYPTION_KEY) {
   throw new Error('Missing ENCRYPTION_KEY.');
 }
 
+// Was `rejectUnauthorized: false` — the same MITM exposure src/db/client.ts
+// fixed for the running app (pre-launch security audit's 10h), never
+// applied here since this script deliberately opens its own Pool instead of
+// importing that module. Reuses the same committed CA cert (not a secret,
+// same reasoning as client.ts).
+const SUPABASE_CA_CERT = fs.readFileSync(path.join(__dirname, '../db/supabase-ca.crt'), 'utf8');
+
 const key = parseEncryptionKey(process.env.ENCRYPTION_KEY);
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: { ca: SUPABASE_CA_CERT, rejectUnauthorized: true },
 });
 
 interface Row {

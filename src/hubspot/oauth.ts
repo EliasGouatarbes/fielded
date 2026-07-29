@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { config } from '../config';
 import { getMerchant, saveHubSpotConnection, saveAdminApiKeyHash } from '../db/merchants';
 import { normalizeShopDomain } from '../shopify/token';
+import { shopify } from '../shopify/oauth';
 import { createOAuthState, verifyOAuthState } from '../oauthState';
 import { exchangeHubSpotToken, fetchHubSpotPortalId, resolveMerchantContext } from './tokens';
 import { registerWebhooksForShop } from '../shopify/webhookRegistration';
@@ -48,7 +49,22 @@ hubspotOAuthRouter.get('/auth/hubspot', oauthRateLimiter, async (req, res) => {
     res.status(400).type('html').send(renderErrorPage('Missing "shop" query parameter.'));
     return;
   }
-  const shop = normalizeShopDomain(shopParam);
+
+  // Validated the same way src/shopify/oauth.ts validates its own `shop`
+  // param (a real allowlist, not just protocol-stripping) — found missing
+  // here in the pre-launch security audit: an invalid shop previously fell
+  // through to a generic error page that reflected the raw query value
+  // back into the response (reflected XSS, independent of htmlPage.ts's own
+  // output-escaping fix). Rejecting anything that isn't a genuine
+  // *.myshopify.com domain before it's ever used closes that off at the
+  // input side too.
+  let shop: string;
+  try {
+    shop = shopify.utils.sanitizeShop(normalizeShopDomain(shopParam), true)!;
+  } catch {
+    res.status(400).type('html').send(renderErrorPage('That doesn\'t look like a valid Shopify store domain.'));
+    return;
+  }
 
   const merchant = await getMerchant(shop);
   if (!merchant) {
