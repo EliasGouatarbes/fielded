@@ -57,7 +57,7 @@ test('mapGraphqlCustomer handles missing nested fields', () => {
 test('mapGraphqlOrder maps a fully-populated node with line items', () => {
   const node: GraphqlOrderNode = {
     name: '#1001',
-    currentTotalPriceSet: { shopMoney: { amount: '42.50' } },
+    currentTotalPriceSet: { shopMoney: { amount: '42.50', currencyCode: 'EUR' } },
     displayFinancialStatus: 'paid',
     displayFulfillmentStatus: 'fulfilled',
     cancelledAt: null,
@@ -89,6 +89,7 @@ test('mapGraphqlOrder maps a fully-populated node with line items', () => {
   const mapped = mapGraphqlOrder(node);
   assert.equal(mapped.name, '#1001');
   assert.equal(mapped.total_price, '42.50');
+  assert.equal(mapped.currency, 'EUR');
   assert.equal(mapped.financial_status, 'paid');
   assert.equal(mapped.fulfillment_status, 'fulfilled');
   assert.equal(mapped.cancelled_at, null);

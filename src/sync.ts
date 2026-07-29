@@ -48,6 +48,11 @@ export interface ShopifyLineItem {
 export interface ShopifyOrder {
   name: string; // e.g. "#1001" — the human-facing order number
   total_price?: string | null;
+  // ISO 4217 (e.g. "EUR") — matches Shopify's own REST field name (12e,
+  // functional audit). `total_price` alone is a bare number; without this,
+  // a merchant whose store currency differs from their HubSpot portal's
+  // default gets a silently wrong-looking Deal amount.
+  currency?: string | null;
   customer?: ShopifyCustomer | null;
   financial_status?: string | null;
   fulfillment_status?: string | null;
@@ -138,6 +143,7 @@ export async function syncOrder(order: ShopifyOrder, merchant: MerchantContext):
       {
         dealname: order.name,
         amount: order.total_price ?? undefined,
+        currencyCode: order.currency ?? undefined,
         pipeline: target.pipeline,
         stage: target.stage,
         owner: target.owner,

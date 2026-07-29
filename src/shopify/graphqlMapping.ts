@@ -8,7 +8,7 @@ import { ShopifyAddress, ShopifyCustomer, ShopifyLineItem, ShopifyOrder } from '
 // and no total/status fields.
 const ORDER_NODE_FIELDS = `
   name
-  currentTotalPriceSet { shopMoney { amount } }
+  currentTotalPriceSet { shopMoney { amount currencyCode } }
   displayFinancialStatus
   displayFulfillmentStatus
   cancelledAt
@@ -75,7 +75,7 @@ export const ORDER_BY_ID_QUERY = `#graphql
 `;
 
 interface GraphqlMoneyBag {
-  shopMoney: { amount: string };
+  shopMoney: { amount: string; currencyCode?: string };
 }
 
 interface GraphqlAddress {
@@ -179,6 +179,7 @@ export function mapGraphqlOrder(node: GraphqlOrderNode): ShopifyOrder {
   return {
     name: node.name,
     total_price: node.currentTotalPriceSet?.shopMoney?.amount,
+    currency: node.currentTotalPriceSet?.shopMoney?.currencyCode,
     customer: node.customer ? mapGraphqlCustomer(node.customer) : undefined,
     financial_status: node.displayFinancialStatus,
     fulfillment_status: node.displayFulfillmentStatus,

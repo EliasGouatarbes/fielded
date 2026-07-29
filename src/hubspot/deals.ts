@@ -18,6 +18,15 @@ export interface DealProperties {
   // integration become unsearchable by order number.
   dealname: string;
   amount?: string;
+  // Shopify's order currency (ISO 4217, e.g. "EUR") — 12e, functional
+  // audit: `amount` alone is a bare number, silently wrong-looking for any
+  // merchant whose store currency differs from their HubSpot portal's
+  // default. Best-effort: HubSpot rejects `deal_currency_code` outright
+  // (400 VALIDATION_ERROR) if that currency isn't one of the portal's
+  // configured currencies, so `upsertDealByName` below falls back to
+  // writing without it rather than failing the whole sync over a currency
+  // the merchant never added to their portal.
+  currencyCode?: string;
   // Resolved per-order by src/hubspot/dealRules.ts against the merchant's
   // own rules (multi-merchant step) — this function just persists whatever
   // it's given, it makes no pipeline/stage/owner decisions itself.
@@ -30,6 +39,40 @@ export interface DealProperties {
   // orders/updated delivery (which fires for financial/fulfillment status
   // changes, not product edits).
   lineItems?: DealLineItem[];
+}
+
+// HubSpot rejects `deal_currency_code` with a 400 VALIDATION_ERROR if the
+// currency isn't one of the portal's configured currencies (enforced since
+// July 2023) — e.g. a Shopify store selling in a currency the merchant's
+// HubSpot portal was never configured for. Pure/exported so the detection
+// is independently testable without a live API call.
+export function isCurrencyValidationError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  if ((err as { code?: unknown }).code !== 400) return false;
+  const message = (err as { body?: { message?: unknown } }).body?.message;
+  return typeof message === 'string' && /effective currency codes/i.test(message);
+}
+
+// Tries `write` with the full properties first; if HubSpot rejects it
+// specifically for an unconfigured currency, retries once with
+// `deal_currency_code` stripped — a merchant whose HubSpot portal was never
+// set up for their store's currency still gets the deal synced, just
+// without the currency tag, rather than the whole sync failing.
+async function writeDealProperties<T>(
+  write: (properties: Record<string, string>) => Promise<T>,
+  properties: Record<string, string>,
+  dealname: string
+): Promise<T> {
+  try {
+    return await write(properties);
+  } catch (err) {
+    if (!isCurrencyValidationError(err) || !properties.deal_currency_code) throw err;
+    console.warn(
+      `Deal currency "${properties.deal_currency_code}" isn't configured in this HubSpot portal — syncing "${dealname}" without a currency code.`
+    );
+    const { deal_currency_code: _currency, ...withoutCurrency } = properties;
+    return write(withoutCurrency);
+  }
 }
 
 // Search-before-create by dealname (the order number): a retried
@@ -61,6 +104,9 @@ async function upsertDealByNameLocked(
   if (deal.amount !== undefined) {
     properties.amount = deal.amount;
   }
+  if (deal.currencyCode) {
+    properties.deal_currency_code = deal.currencyCode;
+  }
   if (deal.pipeline) {
     properties.pipeline = deal.pipeline;
   }
@@ -73,9 +119,14 @@ async function upsertDealByNameLocked(
 
   const cachedId = getCachedId(cacheKey);
   if (cachedId) {
-    await withRetry(() => client.crm.deals.basicApi.update(cachedId, { properties }), {
-      label: `HubSpot deal update (${cachedId})`,
-    });
+    await writeDealProperties(
+      (props) =>
+        withRetry(() => client.crm.deals.basicApi.update(cachedId, { properties: props }), {
+          label: `HubSpot deal update (${cachedId})`,
+        }),
+      properties,
+      deal.dealname
+    );
     return cachedId;
   }
 
@@ -96,33 +147,43 @@ async function upsertDealByNameLocked(
 
   const existing = searchResult.results[0];
   if (existing) {
-    await withRetry(() => client.crm.deals.basicApi.update(existing.id, { properties }), {
-      label: `HubSpot deal update (${existing.id})`,
-    });
+    await writeDealProperties(
+      (props) =>
+        withRetry(() => client.crm.deals.basicApi.update(existing.id, { properties: props }), {
+          label: `HubSpot deal update (${existing.id})`,
+        }),
+      properties,
+      deal.dealname
+    );
     setCachedId(cacheKey, existing.id);
     return existing.id;
   }
 
   try {
-    const created = await withRetry(
-      () =>
-        client.crm.deals.basicApi.create({
-          properties,
-          associations: contactId
-            ? [
-                {
-                  to: { id: contactId },
-                  types: [
+    const created = await writeDealProperties(
+      (props) =>
+        withRetry(
+          () =>
+            client.crm.deals.basicApi.create({
+              properties: props,
+              associations: contactId
+                ? [
                     {
-                      associationCategory: 'HUBSPOT_DEFINED' as any,
-                      associationTypeId: AssociationTypes.dealToContact,
+                      to: { id: contactId },
+                      types: [
+                        {
+                          associationCategory: 'HUBSPOT_DEFINED' as any,
+                          associationTypeId: AssociationTypes.dealToContact,
+                        },
+                      ],
                     },
-                  ],
-                },
-              ]
-            : undefined,
-        }),
-      { label: `HubSpot deal create (${deal.dealname})` }
+                  ]
+                : undefined,
+            }),
+          { label: `HubSpot deal create (${deal.dealname})` }
+        ),
+      properties,
+      deal.dealname
     );
     setCachedId(cacheKey, created.id);
     if (deal.lineItems?.length) {
@@ -137,9 +198,14 @@ async function upsertDealByNameLocked(
     const conflictId = extractConflictingId(err);
     if (!conflictId) throw err;
 
-    await withRetry(() => client.crm.deals.basicApi.update(conflictId, { properties }), {
-      label: `HubSpot deal update after conflict (${conflictId})`,
-    });
+    await writeDealProperties(
+      (props) =>
+        withRetry(() => client.crm.deals.basicApi.update(conflictId, { properties: props }), {
+          label: `HubSpot deal update after conflict (${conflictId})`,
+        }),
+      properties,
+      deal.dealname
+    );
     setCachedId(cacheKey, conflictId);
     return conflictId;
   }

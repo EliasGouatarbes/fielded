@@ -1283,16 +1283,57 @@ marketing suite or Stacksync's enterprise-scale sync.
         store's admin key has been rotated as a result; current value
         recorded outside this file, not printed in chat per 10i's
         credential-hygiene finding.
-      **Still open from this audit** (tracked here, not yet started): 12e
-      (currency is discarded — Deal `amount` is a bare number with no
-      currency code), 12f (no `.env.example` despite `config.ts` pointing
-      at one), 12g (no `orders/delete`/`customers/delete` webhook handling
-      — orphaned HubSpot records on a Shopify-side delete). Explicitly
-      re-confirmed as still-accepted, not re-opened by this audit: no
-      `app/uninstalled` handler (bounded by `shop/redact`'s 48h window,
-      10b), no real email/Slack alert for a broken HubSpot connection
-      (10f), and the `ts-node-dev` `npm audit` finding (10k, dev-only, no
-      fix available).
+      **Still open from this audit** (tracked here, not yet started): 12f
+      (no `.env.example` despite `config.ts` pointing at one), 12g (no
+      `orders/delete`/`customers/delete` webhook handling — orphaned
+      HubSpot records on a Shopify-side delete). Explicitly re-confirmed as
+      still-accepted, not re-opened by this audit: no `app/uninstalled`
+      handler (bounded by `shop/redact`'s 48h window, 10b), no real
+      email/Slack alert for a broken HubSpot connection (10f), and the
+      `ts-node-dev` `npm audit` finding (10k, dev-only, no fix available).
+    - **12e. [DONE, VERIFIED, 2026-07-29]** Currency was discarded — Deal
+      `amount` was a bare number with no currency code, risky for any
+      merchant whose store currency differs from their HubSpot portal's
+      default.
+      Real constraint discovered before implementing (not assumed): HubSpot
+      enforces `deal_currency_code` validation since July 2023 — setting it
+      to a currency that isn't one of the portal's configured currencies
+      returns a hard 400 `VALIDATION_ERROR`, not a warning. Naively always
+      sending the Shopify order's currency would have made things *worse*
+      for a currency-mismatched merchant: trading a wrong-looking amount
+      for the entire sync failing outright.
+      Designed around it in `src/hubspot/deals.ts`: new
+      `DealProperties.currencyCode`, and a `writeDealProperties` wrapper
+      around all 4 deal-write call sites (cache-hit update, search-hit
+      update, create, post-conflict update) that tries with
+      `deal_currency_code` set first, and on the specific validation error
+      (new pure, exported `isCurrencyValidationError`, matching
+      `conflict.ts`'s existing `err.code`/`err.body.message` duck-typing
+      pattern) retries once with it stripped — the deal still syncs with
+      its amount, just without the currency tag, rather than failing.
+      `ShopifyOrder` gained `currency` (matching Shopify's own REST field
+      name, ISO 4217) in `src/sync.ts`, passed through to `upsertDealByName`.
+      GraphQL backfill path (`src/shopify/graphqlMapping.ts`): added
+      `currencyCode` to `currentTotalPriceSet`'s selection and mapped it —
+      wasn't being fetched at all before.
+      New `src/hubspot/deals.test.ts` (this file didn't exist before):
+      `isCurrencyValidationError` against the real documented HubSpot error
+      message, a non-400 error, an unrelated 400, and non-object input.
+      Extended the existing `mapGraphqlOrder` test to assert `currency`
+      mapping. 72 tests pass (68 prior + 4 new); clean build.
+      Live-verified against the real dev store with hand-signed synthetic
+      webhooks (same low-risk pattern as 12d, rather than needing multi-
+      currency configured for real): an order with `currency: "USD"` (the
+      portal's actual configured currency) produced a deal with
+      `deal_currency_code: "USD"` set correctly, confirmed via a direct
+      HubSpot API read. An order with `currency: "ISK"` (a real ISO code
+      almost certainly not configured in this portal) still synced
+      successfully (`status: success` in `sync_log`, not an error) — and
+      the resulting deal's `amount` was set correctly while
+      `deal_currency_code` came back `null`, proving the fallback engaged
+      exactly as designed rather than either failing the sync or writing a
+      currency the portal doesn't recognize. Both test deals archived
+      afterward.
     - **12d. [DONE, VERIFIED, 2026-07-29]** Orders/customers with no email
       were silently skipped — a guest checkout, POS sale, or any other
       email-less Shopify customer vanished with zero trace: no HubSpot
