@@ -23,6 +23,10 @@ export interface ShopifyAddress {
 }
 
 export interface ShopifyCustomer {
+  // Only ever used as a fallback identifier for the sync_log entry when
+  // there's no email to key off (12d, functional audit) — everything else
+  // in this app still upserts HubSpot contacts by email, unchanged.
+  id?: number | string | null;
   email?: string | null;
   first_name?: string | null;
   last_name?: string | null;
@@ -63,7 +67,21 @@ export async function syncCustomer(
   merchant: MerchantContext,
   lifecycleStage?: string
 ): Promise<string | undefined> {
-  if (!customer.email) return undefined;
+  // Previously a silent no-op — a guest checkout, POS sale, or any other
+  // email-less customer vanished with zero trace: no HubSpot contact, no
+  // sync_log row, nothing (12d, functional audit). Now logged as its own
+  // 'skipped' status (neither success nor error — this is expected,
+  // legitimate Shopify data, not a failure) so it's at least visible.
+  if (!customer.email) {
+    await logSyncResult({
+      entityType: 'customer',
+      shopifyId: customer.id != null ? String(customer.id) : 'unknown',
+      status: 'skipped',
+      errorMessage: 'No email on this customer — nothing to sync to HubSpot.',
+      shopDomain: merchant.shopDomain,
+    });
+    return undefined;
+  }
 
   try {
     const hubspotId = await upsertContactByEmail(merchant.hubspotClient, merchant.shopDomain, {

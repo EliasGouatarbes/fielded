@@ -1,14 +1,33 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapGraphqlCustomer, mapGraphqlOrder, orderGid, GraphqlCustomerNode, GraphqlOrderNode } from './graphqlMapping';
+import {
+  mapGraphqlCustomer,
+  mapGraphqlOrder,
+  orderGid,
+  numericIdFromGid,
+  GraphqlCustomerNode,
+  GraphqlOrderNode,
+} from './graphqlMapping';
 
 test('orderGid builds a GraphQL global id from a numeric REST order id', () => {
   assert.equal(orderGid(6000123456789), 'gid://shopify/Order/6000123456789');
   assert.equal(orderGid('6000123456789'), 'gid://shopify/Order/6000123456789');
 });
 
+test('numericIdFromGid extracts the trailing numeric id from a global id', () => {
+  assert.equal(numericIdFromGid('gid://shopify/Customer/7123456789'), '7123456789');
+});
+
+test('numericIdFromGid returns undefined for a missing or malformed value', () => {
+  assert.equal(numericIdFromGid(undefined), undefined);
+  assert.equal(numericIdFromGid(null), undefined);
+  assert.equal(numericIdFromGid(''), undefined);
+  assert.equal(numericIdFromGid('not-a-gid'), undefined);
+});
+
 test('mapGraphqlCustomer maps a fully-populated node', () => {
   const node: GraphqlCustomerNode = {
+    id: 'gid://shopify/Customer/7123456789',
     defaultEmailAddress: { emailAddress: 'jane@example.com' },
     firstName: 'Jane',
     lastName: 'Doe',
@@ -17,6 +36,7 @@ test('mapGraphqlCustomer maps a fully-populated node', () => {
   };
 
   assert.deepEqual(mapGraphqlCustomer(node), {
+    id: '7123456789',
     email: 'jane@example.com',
     first_name: 'Jane',
     last_name: 'Doe',

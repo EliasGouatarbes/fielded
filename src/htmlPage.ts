@@ -105,6 +105,7 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
   .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
   .badge-ok { background: #e3f5e9; color: #1c6b3a; }
   .badge-bad { background: #fdecea; color: #7a2018; }
+  .badge-neutral { background: #f0f1f3; color: #555; }
   @media (prefers-color-scheme: dark) {
     body { background: #0f1115; color: #e6e6e6; }
     .card { background: #1a1d23; box-shadow: none; border: 1px solid #2a2e37; }
@@ -120,6 +121,7 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
     th { color: #9aa0a6; }
     .badge-ok { background: #123420; color: #6fd897; }
     .badge-bad { background: #3a1512; color: #ffb4a8; }
+    .badge-neutral { background: #24272e; color: #9aa0a6; }
   }
 </style>
 </head>

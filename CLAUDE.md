@@ -1283,9 +1283,8 @@ marketing suite or Stacksync's enterprise-scale sync.
         store's admin key has been rotated as a result; current value
         recorded outside this file, not printed in chat per 10i's
         credential-hygiene finding.
-      **Still open from this audit** (tracked here, not yet started): 12d
-      (orders/customers with no email are silently skipped, no log entry),
-      12e (currency is discarded — Deal `amount` is a bare number with no
+      **Still open from this audit** (tracked here, not yet started): 12e
+      (currency is discarded — Deal `amount` is a bare number with no
       currency code), 12f (no `.env.example` despite `config.ts` pointing
       at one), 12g (no `orders/delete`/`customers/delete` webhook handling
       — orphaned HubSpot records on a Shopify-side delete). Explicitly
@@ -1294,6 +1293,50 @@ marketing suite or Stacksync's enterprise-scale sync.
       10b), no real email/Slack alert for a broken HubSpot connection
       (10f), and the `ts-node-dev` `npm audit` finding (10k, dev-only, no
       fix available).
+    - **12d. [DONE, VERIFIED, 2026-07-29]** Orders/customers with no email
+      were silently skipped — a guest checkout, POS sale, or any other
+      email-less Shopify customer vanished with zero trace: no HubSpot
+      contact, no `sync_log` row, nothing. `src/sync.ts`'s `syncCustomer`
+      just did `if (!customer.email) return undefined;` with no logging at
+      all.
+      New `SyncStatus` value `'skipped'` (`src/db/syncLog.ts`) — distinct
+      from `'error'` deliberately, since this is expected, legitimate
+      Shopify data, not a failure. `syncCustomer` now logs a `'skipped'`
+      entry with a clear explanation before returning, keyed by the
+      customer's own Shopify id as a fallback identifier (there's no email
+      to key off, the usual natural key throughout this app).
+      That fallback identifier didn't exist before this fix: `ShopifyCustomer`
+      never carried an `id` field (email was always the only key anything
+      needed). Added it, and — since the GraphQL backfill path didn't
+      request `id` on customer nodes either — added `id` to both
+      `CUSTOMERS_QUERY` and the order's embedded `customer` selection in
+      `ORDER_NODE_FIELDS` (`src/shopify/graphqlMapping.ts`), plus a new
+      pure `numericIdFromGid()` (the inverse of the existing `orderGid()`)
+      to convert GraphQL's `gid://shopify/Customer/<id>` back to the plain
+      numeric id the REST-shaped webhook payloads already carry natively —
+      keeps the fallback identifier consistent regardless of which path a
+      given sync came through.
+      Dashboard (12a) gained a neutral `.badge-neutral` style
+      (`src/htmlPage.ts`) so a skipped entry reads as "nothing to do here,"
+      not a failure, in the activity feed — a plain `success`-vs-`error`
+      binary would have painted every legitimate no-email customer red.
+      New tests (`src/shopify/graphqlMapping.test.ts`): `numericIdFromGid`
+      against a real gid, and against missing/malformed input; extended
+      the existing `mapGraphqlCustomer` test to assert `id` mapping too.
+      68 tests pass (66 prior + 2 new); clean build.
+      Live-verified against the local dev server with hand-signed synthetic
+      webhooks (same pattern as prior refund-webhook testing — no need to
+      create real no-email data in the live store): a bare
+      `customers/create` with no email correctly logged
+      `{status:'skipped', shopifyId:'999888777', errorMessage:'No email on
+      this customer — nothing to sync to HubSpot.'}`; an `orders/create`
+      whose embedded customer had no email correctly produced *two*
+      entries — the order itself `status:'success'` (a real Deal was
+      created, `513762902245`) and the customer `status:'skipped'` — proving
+      an order still syncs correctly even when its customer can't. Test
+      deal archived afterward. Playwright screenshot of the dashboard's
+      activity feed confirms the neutral gray badge renders distinctly
+      from the green "success" ones, with the explanation shown inline.
     - **12c. [DONE, VERIFIED, 2026-07-29]** No actual support contact
       anywhere in the app — "contact support" was mentioned on the error
       page and (pre-12a) the webhook-failure warning, but pointed nowhere.

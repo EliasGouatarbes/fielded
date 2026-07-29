@@ -1,7 +1,10 @@
 import { pool, ensureSchema } from './client';
 
 export type SyncEntityType = 'customer' | 'order';
-export type SyncStatus = 'success' | 'error';
+// 'skipped' (12d, functional audit): a legitimate, expected non-sync — e.g.
+// a customer with no email — distinct from 'error' (something went wrong)
+// so it doesn't read as a failure in the dashboard's activity feed.
+export type SyncStatus = 'success' | 'error' | 'skipped';
 
 export interface SyncLogEntry {
   entityType: SyncEntityType;

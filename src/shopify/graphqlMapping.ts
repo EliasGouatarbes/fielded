@@ -13,6 +13,7 @@ const ORDER_NODE_FIELDS = `
   displayFulfillmentStatus
   cancelledAt
   customer {
+    id
     defaultEmailAddress { emailAddress }
     firstName
     lastName
@@ -42,6 +43,7 @@ export const CUSTOMERS_QUERY = `#graphql
       edges {
         cursor
         node {
+          id
           defaultEmailAddress { emailAddress }
           firstName
           lastName
@@ -85,6 +87,7 @@ interface GraphqlAddress {
 }
 
 export interface GraphqlCustomerNode {
+  id?: string | null;
   defaultEmailAddress?: { emailAddress: string } | null;
   firstName?: string | null;
   lastName?: string | null;
@@ -130,6 +133,16 @@ export function orderGid(numericOrderId: number | string): string {
   return `gid://shopify/Order/${numericOrderId}`;
 }
 
+// Inverse of the above, for a customer's own id — used so a customer with
+// no email (12d, functional audit) still has *something* logged in
+// `sync_log` instead of vanishing with zero trace. Pure/exported for the
+// same testability reason as `orderGid`.
+export function numericIdFromGid(gid?: string | null): string | undefined {
+  if (!gid) return undefined;
+  const match = gid.match(/\/(\d+)$/);
+  return match ? match[1] : undefined;
+}
+
 function mapGraphqlAddress(address?: GraphqlAddress | null): ShopifyAddress | undefined {
   if (!address) return undefined;
   return {
@@ -143,6 +156,7 @@ function mapGraphqlAddress(address?: GraphqlAddress | null): ShopifyAddress | un
 
 export function mapGraphqlCustomer(node: GraphqlCustomerNode): ShopifyCustomer {
   return {
+    id: numericIdFromGid(node.id),
     email: node.defaultEmailAddress?.emailAddress,
     first_name: node.firstName,
     last_name: node.lastName,
