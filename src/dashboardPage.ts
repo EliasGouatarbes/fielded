@@ -42,6 +42,11 @@ export function renderDashboardPage(): string {
     <div id="status-body"></div>
   </section>
 
+  <section id="backfill-section">
+    <h2>Historical import</h2>
+    <div id="backfill-body"></div>
+  </section>
+
   <section id="deal-rules-section">
     <h2>Deal routing rules</h2>
     <p class="muted">First matching rule wins. Leave a field blank to match any value. Pipeline/stage/owner are
@@ -79,6 +84,7 @@ export function renderDashboardPage(): string {
     <h2>Actions</h2>
     <div id="action-error"></div>
     <button type="button" id="retry-webhooks-btn" class="btn-secondary">Retry webhook registration</button>
+    <button type="button" id="retry-backfill-btn" class="btn-secondary">Retry historical import</button>
     <button type="button" id="regenerate-key-btn" class="btn-secondary">Regenerate admin key</button>
     <div id="new-key-block"></div>
   </section>
@@ -228,6 +234,44 @@ export function renderDashboardPage(): string {
       });
       el.appendChild(badgeWrap);
     }
+  }
+
+  function renderBackfillStatus(backfillStatus) {
+    var el = document.getElementById('backfill-body');
+    clearChildren(el);
+
+    if (!backfillStatus) {
+      var none = document.createElement('p');
+      none.className = 'muted';
+      none.textContent = 'No import has run yet.';
+      el.appendChild(none);
+      return;
+    }
+
+    var badge = document.createElement('span');
+    var statusText = { running: 'in progress', complete: 'complete', failed: 'failed' }[backfillStatus.status] ||
+      backfillStatus.status;
+    badge.className = 'badge ' + (backfillStatus.status === 'complete' ? 'badge-ok' :
+      (backfillStatus.status === 'failed' ? 'badge-bad' : ''));
+    if (backfillStatus.status === 'running') {
+      badge.style.background = '#fff4e5';
+      badge.style.color = '#92610a';
+    }
+    badge.textContent = statusText;
+    el.appendChild(badge);
+
+    var detail = document.createElement('p');
+    detail.className = 'muted';
+    detail.style.marginTop = '0.4rem';
+    if (backfillStatus.status === 'running') {
+      detail.textContent = 'Started ' + formatDate(backfillStatus.startedAt) + '. This page won\\'t update itself — reload to check again.';
+    } else if (backfillStatus.status === 'complete') {
+      detail.textContent = 'Imported ' + backfillStatus.customerCount + ' customer(s) and ' +
+        backfillStatus.orderCount + ' order(s), finished ' + formatDate(backfillStatus.completedAt) + '.';
+    } else if (backfillStatus.status === 'failed') {
+      detail.textContent = 'Failed at ' + formatDate(backfillStatus.completedAt) + ': ' + backfillStatus.error;
+    }
+    el.appendChild(detail);
   }
 
   function renderActivity(entries) {
@@ -425,6 +469,22 @@ export function renderDashboardPage(): string {
       });
   });
 
+  document.getElementById('retry-backfill-btn').addEventListener('click', function () {
+    clearChildren(actionErrorEl);
+    authedFetch('/merchants/' + shop + '/retry-backfill', { method: 'POST' })
+      .then(function (data) {
+        if (data && data.ok) {
+          loadDashboard();
+        } else {
+          showActionError((data && data.error) || 'Retry failed.');
+        }
+      })
+      .catch(function (err) {
+        if (err.message === 'unauthorized') return;
+        showActionError(err.message);
+      });
+  });
+
   document.getElementById('regenerate-key-btn').addEventListener('click', function () {
     if (!confirm('This invalidates your current admin key immediately. Continue?')) return;
     clearChildren(actionErrorEl);
@@ -465,6 +525,7 @@ export function renderDashboardPage(): string {
     ]).then(function (results) {
       showDashboard();
       renderStatus(results[0]);
+      renderBackfillStatus(results[0].backfillStatus);
       rulesDraft = (results[1].rules || []).map(function (r) {
         return {
           financial_status: (r.when && r.when.financial_status) || '',

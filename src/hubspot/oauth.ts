@@ -220,7 +220,8 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
         <p>From here, nothing else is required. New Shopify orders and customers will appear in HubSpot automatically
         as <strong>Contacts</strong> and <strong>Deals</strong> — not HubSpot's native Orders object, so your existing
         pipelines, lists, and reports keep working. Historical import can take a few minutes depending on how much
-        order history this store has.</p>
+        order history this store has — check your <a href="${dashboardUrl}">dashboard</a> any time to see exactly
+        when it's finished, or if anything went wrong.</p>
         <a class="btn" href="${dashboardUrl}">View your dashboard &rarr;</a>
         ${advancedHtml}`
       )

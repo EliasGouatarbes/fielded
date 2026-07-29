@@ -1283,17 +1283,65 @@ marketing suite or Stacksync's enterprise-scale sync.
         store's admin key has been rotated as a result; current value
         recorded outside this file, not printed in chat per 10i's
         credential-hygiene finding.
-      **Still open from this audit** (tracked here, not yet started):
-      12b (backfill progress on the onboarding page never updates/confirms
-      completion), 12c (no actual support contact anywhere in the app —
-      still a gap even after 12a's dashboard-link fix, since "contact
-      support" itself still points nowhere), 12d (orders/customers with no
-      email are silently skipped, no log entry), 12e (currency is discarded
-      — Deal `amount` is a bare number with no currency code), 12f (no
-      `.env.example` despite `config.ts` pointing at one), 12g (no
+      **Still open from this audit** (tracked here, not yet started): 12c
+      (no actual support contact anywhere in the app — still a gap even
+      after 12a's dashboard-link fix, since "contact support" itself still
+      points nowhere), 12d (orders/customers with no email are silently
+      skipped, no log entry), 12e (currency is discarded — Deal `amount`
+      is a bare number with no currency code), 12f (no `.env.example`
+      despite `config.ts` pointing at one), 12g (no
       `orders/delete`/`customers/delete` webhook handling — orphaned
       HubSpot records on a Shopify-side delete). Explicitly re-confirmed as
       still-accepted, not re-opened by this audit: no `app/uninstalled`
       handler (bounded by `shop/redact`'s 48h window, 10b), no real
       email/Slack alert for a broken HubSpot connection (10f), and the
       `ts-node-dev` `npm audit` finding (10k, dev-only, no fix available).
+    - **12b. [DONE, VERIFIED, 2026-07-29]** Backfill progress on the
+      onboarding page never updated or confirmed completion — a merchant
+      had no way to know a historical import actually finished (or
+      failed) short of reading server logs.
+      New `merchants.backfill_status` (JSONB, same precedent as
+      `deal_rules`) — added to `ensureSchema`'s `CREATE TABLE` for fresh
+      environments plus the usual companion `ALTER TABLE ... ADD COLUMN IF
+      NOT EXISTS` for the already-live Supabase table. New
+      `BackfillStatus` type + `saveBackfillStatus` in `src/db/merchants.ts`:
+      `{status: 'running'|'complete'|'failed', startedAt, completedAt?,
+      customerCount?, orderCount?, error?}`, written as a full replacement
+      object at each transition (not a partial JSONB patch) so there's no
+      read-modify-write race between concurrent callers.
+      `src/backfillMerchant.ts` now writes `'running'` at the start and
+      `'complete'`/`'failed'` (with counts or the error message) at the
+      end, wrapped in a try/catch that still rethrows unchanged — this
+      only adds visibility, it doesn't change the existing failure
+      propagation behavior any caller already depends on. Both callers
+      (the OAuth callback's backgrounded trigger and the CLI
+      `npm run backfill` script) get this for free since the tracking
+      lives inside `backfillMerchant` itself, not duplicated per caller.
+      Extended the dashboard (12a) rather than building a separate
+      mechanism: `GET /merchants/:shop/status` gained a `backfillStatus`
+      field; new `POST /merchants/:shop/retry-backfill` (same
+      auth/rate-limit stack as every other dashboard action) starts
+      another run in the background — mirrors the OAuth callback's own
+      backgrounding, since a large store's import can take a while and the
+      caller just wants confirmation it started, not to block on it. New
+      "Historical import" section in `src/dashboardPage.ts` shows the
+      current status (badge + detail line — start time while running,
+      counts and finish time when complete, the error message when
+      failed) and a "Retry historical import" button. Also updated the
+      onboarding success page's copy to point at the dashboard for
+      checking completion, now that there's somewhere real to check.
+      Verified live against the local dev server (no `APP_URL`-must-be-
+      `https://` dependency here, unlike webhook registration, so local
+      testing is representative): ran a real `npm run backfill`, confirmed
+      `backfillStatus` correctly showed `{status:'complete', customerCount:
+      8, orderCount:5, ...}` matching the console output exactly; called
+      `POST .../retry-backfill` and confirmed it returned
+      `{ok:true,status:'running'}` immediately while the DB showed
+      `status:'running'`, then polled again after a few seconds and
+      confirmed it had transitioned to `'complete'` with matching counts —
+      proving the endpoint is genuinely backgrounded, not just fast.
+      Playwright screenshot of the dashboard's new section shows the real
+      data rendering correctly. `npm run build` and all 66 tests
+      (unchanged — this is DB-touching orchestration + client JS, out of
+      scope for unit tests per the same precedent established in 12a)
+      still pass.

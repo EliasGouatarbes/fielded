@@ -52,6 +52,7 @@ export function ensureSchema(): Promise<void> {
         deal_rules JSONB NOT NULL DEFAULT '[]'::jsonb,
 
         admin_api_key_hash TEXT,
+        backfill_status JSONB,
 
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -70,10 +71,11 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS sync_log_created_at_idx ON sync_log (created_at DESC);
       CREATE INDEX IF NOT EXISTS sync_log_shop_created_idx ON sync_log (shop_domain, created_at DESC);
 
-      -- Covers an already-deployed merchants table predating this column
+      -- Covers an already-deployed merchants table predating these columns
       -- (CREATE TABLE IF NOT EXISTS above is a no-op there) — idempotent,
       -- safe to run on every process start same as everything else here.
       ALTER TABLE merchants ADD COLUMN IF NOT EXISTS hubspot_connection_broken_at TIMESTAMPTZ;
+      ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_status JSONB;
     `
       )
       .then(() => undefined);

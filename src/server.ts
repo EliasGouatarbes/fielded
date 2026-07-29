@@ -12,6 +12,8 @@ import { validateDealRules, DealRuleValidationError } from './hubspot/dealRules'
 import { registerWebhooksForShop, getWebhookRegistrationStatus } from './shopify/webhookRegistration';
 import { renderDashboardPage } from './dashboardPage';
 import { TRUST_PROXY_HOPS, apiRateLimiter } from './rateLimit';
+import { backfillMerchant } from './backfillMerchant';
+import { resolveMerchantContext } from './hubspot/tokens';
 
 const app = express();
 // Required for express-rate-limit (and any other X-Forwarded-For-based
@@ -208,6 +210,7 @@ app.get('/merchants/:shop/status', apiRateLimiter, requireAdminOrMerchantAuth, a
     dealStage: merchant.dealStage,
     webhooks,
     webhooksError,
+    backfillStatus: merchant.backfillStatus,
   });
 });
 
@@ -224,6 +227,37 @@ app.post('/merchants/:shop/retry-webhooks', apiRateLimiter, requireAdminOrMercha
     res.json({ ok: true });
   } catch (err) {
     console.error(`Retry webhook registration failed for ${shopDomain}:`, err);
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Kicks off another historical backfill (12b, functional audit) — mainly
+// for a failed run, but idempotent (search-before-create throughout) so
+// it's also safe as a plain "re-check everything" action. Backgrounded,
+// same as the OAuth callback's own trigger (src/hubspot/oauth.ts): a large
+// store's import can take a while, and the caller just wants confirmation
+// it started, not to block on it — progress is visible via the status
+// endpoint above once src/backfillMerchant.ts writes its next transition.
+app.post('/merchants/:shop/retry-backfill', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+  const shopDomain = normalizeShopDomain(req.params.shop);
+  const merchant = await getMerchant(shopDomain);
+  if (!merchant) {
+    res.status(404).send('Unknown merchant.');
+    return;
+  }
+
+  try {
+    const ctx = await resolveMerchantContext(shopDomain);
+    if (!ctx) {
+      res.status(404).send('Unknown merchant.');
+      return;
+    }
+    backfillMerchant(shopDomain, ctx).catch((err) =>
+      console.error(`Background retry-backfill failed for ${shopDomain}:`, err)
+    );
+    res.json({ ok: true, status: 'running' });
+  } catch (err) {
+    console.error(`Failed to start backfill retry for ${shopDomain}:`, err);
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
 });

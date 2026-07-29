@@ -3,6 +3,20 @@ import { DealRule } from '../hubspot/dealRules';
 import { config } from '../config';
 import { encrypt, decrypt } from '../crypto';
 
+// Tracks one historical-backfill run so a merchant (via the dashboard) can
+// see it actually finished, rather than the onboarding page's static "⏳
+// running" that never updates. `startedAt` carries through unchanged from
+// the 'running' write to whichever terminal write follows it, so the
+// dashboard can show how long it took.
+export interface BackfillStatus {
+  status: 'running' | 'complete' | 'failed';
+  startedAt: string;
+  completedAt?: string;
+  customerCount?: number;
+  orderCount?: number;
+  error?: string;
+}
+
 export interface Merchant {
   shopDomain: string;
   shopifyAccessToken: string;
@@ -15,6 +29,7 @@ export interface Merchant {
   dealStage: string;
   dealRules: DealRule[];
   adminApiKeyHash: string | null;
+  backfillStatus: BackfillStatus | null;
 }
 
 interface MerchantRow {
@@ -29,6 +44,7 @@ interface MerchantRow {
   deal_stage: string;
   deal_rules: DealRule[];
   admin_api_key_hash: string | null;
+  backfill_status: BackfillStatus | null;
 }
 
 function toMerchant(row: MerchantRow): Merchant {
@@ -44,6 +60,7 @@ function toMerchant(row: MerchantRow): Merchant {
     dealStage: row.deal_stage,
     dealRules: row.deal_rules,
     adminApiKeyHash: row.admin_api_key_hash,
+    backfillStatus: row.backfill_status,
   };
 }
 
@@ -124,6 +141,19 @@ export async function saveDealRules(shopDomain: string, rules: DealRule[]): Prom
     `UPDATE merchants SET deal_rules = $2, updated_at = now() WHERE shop_domain = $1`,
     [shopDomain, JSON.stringify(rules)]
   );
+}
+
+// Called by src/backfillMerchant.ts at each state transition (running ->
+// complete|failed) — written as a full replacement object each time rather
+// than a partial JSONB patch, so there's no read-modify-write race between
+// concurrent callers (the OAuth callback's background run and a manual
+// `npm run backfill`/dashboard retry landing close together).
+export async function saveBackfillStatus(shopDomain: string, status: BackfillStatus): Promise<void> {
+  await ensureSchema();
+  await pool.query(`UPDATE merchants SET backfill_status = $2, updated_at = now() WHERE shop_domain = $1`, [
+    shopDomain,
+    JSON.stringify(status),
+  ]);
 }
 
 export async function saveAdminApiKeyHash(shopDomain: string, hash: string): Promise<void> {
