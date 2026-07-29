@@ -22,6 +22,19 @@ export const pool = new Pool({
   ssl: { ca: SUPABASE_CA_CERT, rejectUnauthorized: true },
 });
 
+// node-postgres's Pool re-emits an idle client's error as pool.emit('error',
+// ...) (see node_modules/pg-pool's own source) — with no listener attached,
+// that's an unhandled EventEmitter error, which crashes the entire Node
+// process. A dropped idle connection is routine (Supabase's pooler recycles
+// them proactively), not fatal: log it and let the pool open a fresh
+// connection on the next query, same as it already does for any other idle
+// client replacement. Found in the pre-launch audit (2026-07-29) — this had
+// no listener at all before, meaning any such drop took the whole service
+// down, not just one query.
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle database client (pool recovers automatically):', err);
+});
+
 let schemaReady: Promise<void> | undefined;
 
 // Bare-bones schema setup, idempotent so it's safe to call on every process

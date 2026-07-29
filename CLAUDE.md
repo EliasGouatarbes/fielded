@@ -1652,3 +1652,89 @@ marketing suite or Stacksync's enterprise-scale sync.
     redeploys automatically from there per the existing Blueprint setup;
     the Supabase grants fix needed no deploy, already live directly against
     the database.
+
+14. [DONE, VERIFIED, 2026-07-29] Second independent pre-launch audit (fresh
+    session, no memory of steps 10/12/13 beyond reading this file), at
+    explicit user request to re-verify everything against actual current
+    code/live behavior rather than trust prior write-ups. Re-confirmed the
+    three original bugs, idempotency (sent the same signed webhook twice —
+    same HubSpot ids both times), a battery of edge cases (no-province
+    guest checkout, Finland address, unicode/accented names, 12 line items,
+    0 line items, no `customer` object at all, a deliberately-invalid
+    `amount` correctly producing a 500 + real logged HubSpot error), git
+    history (still clean), `npm audit` (unchanged, 5 high, dev-only,
+    matches 10k), and — via a direct Shopify GraphQL query independent of
+    this app's own code — that all 6 webhook topics really are registered
+    against the live production URL. All test/verification records created
+    were archived afterward via direct HubSpot API calls. Found two new
+    issues neither of the prior three passes caught, both fixed:
+    - **14a. Unhandled `pg.Pool` 'error' listener.** `src/db/client.ts`
+      constructed the pool but never called `pool.on('error', ...)`.
+      Confirmed directly in `pg-pool`'s own source
+      (`pool.emit('error', err, client)` on an idle client fault, with the
+      library's own inline `TODO` warning about this) that an unhandled
+      `EventEmitter` error crashes the whole Node process — not
+      hypothetical: Supabase's pooler proactively recycles idle
+      connections, so this was a realistic, not rare, crash trigger. Fixed
+      with a listener that logs and lets the pool recover, matching how it
+      already behaves for any other idle-client replacement.
+    - **14b. No `sync_log` retention.** Live-queried the real table: 200
+      rows of real customer emails/order numbers with no expiry path other
+      than the GDPR redact webhooks — an actively-connected merchant who
+      never uninstalls accumulates that PII forever. Fixed with
+      `deleteOldSyncLog` (`src/db/syncLog.ts`, age-based `DELETE`, not a
+      row-count cap) scheduled from `server.ts` to run once ~10s after boot
+      and then daily — matching `ensureSchema`'s own "lazy, idempotent,
+      runs in every process" style rather than needing a paid-tier Render
+      Cron Job. New optional `SYNC_LOG_RETENTION_DAYS` (default 90),
+      documented in `.env.example`.
+    Also fixed three Medium/Low findings from the same pass:
+    - **14c.** `src/shopify/webhookRegistration.ts`'s `registerWebhooksForShop`
+      always called `webhookSubscriptionCreate` for a "missing" topic, even
+      when Shopify already had a *stale* subscription for that topic at a
+      different `uri` (e.g. after an `APP_URL` change) — Shopify allows
+      multiple subscriptions per topic, so this silently left a second,
+      correct one alongside the first, now-dead one, rather than fixing it.
+      New `UPDATE_MUTATION`/`findStaleSubscription` (the latter exported and
+      unit-tested) updates the existing subscription's `uri` in place
+      instead. `deriveWebhookStatus`/`topicsNeedingRegistration` themselves
+      needed no change — this only affects *which* mutation
+      `registerWebhooksForShop` calls for an already-registered-but-stale
+      topic.
+    - **14d.** HubSpot SDK errors stringify their `.message` to include a
+      raw dump of the HTTP response headers (confirmed live: a Cloudflare
+      `__cf_bm` cookie, rate-limit counters, a correlation id) — that full
+      string was going straight into `sync_log.error_message` and back out
+      through the authenticated `/sync-status` API. New
+      `sanitizeErrorMessage` (`src/errorSanitize.ts`, unit-tested) strips
+      everything from a `Headers:` marker onward and caps length; applied
+      once, inside `logSyncResult` itself, so every existing caller is
+      covered without touching them individually. Live-verified: re-ran the
+      invalid-amount test, confirmed the stored message keeps the real
+      HubSpot validation detail but no longer contains the headers section.
+    - **14e.** No graceful shutdown (`server.ts` now handles
+      `SIGTERM`/`SIGINT`: closes the HTTP server and DB pool, force-exits
+      after 10s if that hangs) and no mobile horizontal-scroll wrapper
+      around the dashboard's three tables (`.table-scroll` in
+      `src/htmlPage.ts`, applied in `src/dashboardPage.ts`) — bounded, low-
+      severity findings, fixed alongside the rest of this pass rather than
+      separately. Graceful shutdown could not be live-verified on this
+      Windows dev machine (`taskkill` without `/F` refuses to signal a
+      console process at all — "can only be terminated forcefully"; Windows
+      has no real POSIX signal delivery to another process either way) —
+      production runs on Render (Linux), where `SIGTERM` is a real signal
+      and this code path applies as written. Flagged rather than claimed
+      as verified.
+    Also flagged, not a code fix: confirm directly in the Shopify Partner
+    Dashboard that the GDPR compliance webhook URLs from step 10a actually
+    reached Shopify — a `.shopify/deploy-bundle/manifest.json` next to this
+    repo (in the wrapping folder) shows them staged with the correct
+    production URLs, which is reasonable evidence but not proof the deploy
+    was accepted; that state lives on Shopify's side, not verifiable from
+    local files.
+    `npm run build` clean; 77 tests pass (72 prior + 5 new: 2 for
+    `findStaleSubscription`, 3 for `sanitizeErrorMessage`). Every live test
+    this pass ran against the real dev store/shared Supabase database (no
+    separate staging environment exists) — all created test
+    contacts/deals/records archived afterward, confirmed the one real
+    merchant row and its data were untouched throughout.

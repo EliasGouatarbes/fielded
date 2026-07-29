@@ -26,6 +26,13 @@ export interface AppConfig {
     // step). Per-merchant keys are generated at HubSpot-connect time and
     // stored hashed in the merchants table, not here.
     adminApiKey: string;
+    // sync_log rows carry customer emails and order numbers with no other
+    // expiry mechanism (pre-launch audit, 2026-07-29) — this bounds how long
+    // that PII sits in the database for a merchant who never triggers a GDPR
+    // redact request. 90 days by default: long enough to debug a real sync
+    // issue after the fact, short enough not to become its own data-retention
+    // liability.
+    syncLogRetentionDays: number;
   };
   db: {
     connectionString: string;
@@ -90,6 +97,7 @@ function loadConfig(): AppConfig {
       port: Number(optional('PORT', '3000')),
       appUrl: optional('APP_URL', `http://localhost:${optional('PORT', '3000')}`),
       adminApiKey: process.env.ADMIN_API_KEY as string,
+      syncLogRetentionDays: Number(optional('SYNC_LOG_RETENTION_DAYS', '90')),
     },
     db: {
       connectionString: process.env.DATABASE_URL as string,

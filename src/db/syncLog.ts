@@ -1,4 +1,5 @@
 import { pool, ensureSchema } from './client';
+import { sanitizeErrorMessage } from '../errorSanitize';
 
 export type SyncEntityType = 'customer' | 'order';
 // 'skipped' (12d, functional audit): a legitimate, expected non-sync — e.g.
@@ -36,7 +37,7 @@ export async function logSyncResult(entry: SyncLogEntry): Promise<void> {
         entry.shopifyId,
         entry.hubspotId ?? null,
         entry.status,
-        entry.errorMessage ?? null,
+        entry.errorMessage ? sanitizeErrorMessage(entry.errorMessage) : null,
         entry.shopDomain ?? null,
       ]
     );
@@ -103,4 +104,20 @@ export async function deleteSyncLogForCustomer(shopDomain: string, email: string
     `DELETE FROM sync_log WHERE shop_domain = $1 AND entity_type = 'customer' AND shopify_id = $2`,
     [shopDomain, email]
   );
+}
+
+// Retention policy (pre-launch audit, 2026-07-29): sync_log carries customer
+// emails and order numbers with no other expiry — previously the only
+// deletion paths were the GDPR redact webhooks above, so a merchant who
+// never uninstalls or triggers a redact request accumulated that PII
+// forever. Scheduled to run periodically from server.ts (config.server.
+// syncLogRetentionDays, default 90) — a plain age-based DELETE, not a
+// row-count cap, since "how much history is useful for debugging a sync
+// issue" is a time question, not a size one. Returns the row count deleted
+// purely for the caller's log line.
+export async function deleteOldSyncLog(retentionDays: number): Promise<number> {
+  await ensureSchema();
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+  const result = await pool.query('DELETE FROM sync_log WHERE created_at < $1', [cutoff]);
+  return result.rowCount ?? 0;
 }

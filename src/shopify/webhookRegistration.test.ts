@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { topicsNeedingRegistration, deriveWebhookStatus } from './webhookRegistration';
+import { topicsNeedingRegistration, deriveWebhookStatus, findStaleSubscription } from './webhookRegistration';
 
 const TOPICS = [
   'orders/create',
@@ -105,4 +105,19 @@ test('deriveWebhookStatus treats a stale registration (wrong uri) as not registe
   const status = deriveWebhookStatus(existing, TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
   const ordersCreate = status.find((s) => s.topic === 'orders/create');
   assert.equal(ordersCreate?.registered, false);
+});
+
+test('findStaleSubscription finds an existing registration for the topic regardless of its uri', () => {
+  const existing = [
+    { id: 'gid://shopify/WebhookSubscription/1', topic: 'ORDERS_CREATE', uri: 'https://old-url.example.com/webhooks/shopify/orders/create' },
+  ];
+  const stale = findStaleSubscription(existing, 'ORDERS_CREATE');
+  assert.equal(stale?.id, 'gid://shopify/WebhookSubscription/1');
+});
+
+test('findStaleSubscription returns undefined when no subscription exists for the topic', () => {
+  const existing = [
+    { id: 'gid://shopify/WebhookSubscription/1', topic: 'ORDERS_CREATE', uri: `${APP_URL}/webhooks/shopify/orders/create` },
+  ];
+  assert.equal(findStaleSubscription(existing, 'CUSTOMERS_CREATE'), undefined);
 });

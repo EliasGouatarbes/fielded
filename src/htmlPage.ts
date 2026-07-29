@@ -116,6 +116,12 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
     font-size: 0.9rem;
     margin-bottom: 0.75rem;
   }
+  /* Wraps every table (deal-rules editor, activity feed, connection status)
+     rather than letting a wide table force the whole page to scroll
+     horizontally on a narrow phone screen — found in the pre-launch audit,
+     2026-07-29. The table itself stays a real <table> (no display:block,
+     which would break its layout); only this wrapper scrolls. */
+  .table-scroll { width: 100%; overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
   th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
   th { color: #666; font-weight: 600; font-size: 0.8rem; }

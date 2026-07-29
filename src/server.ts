@@ -7,7 +7,7 @@ import { shopifyWebhookRouter } from './shopify/webhooks';
 import { normalizeShopDomain } from './shopify/token';
 import { pool } from './db/client';
 import { getMerchant, saveDealRules, getShopsWithBrokenHubSpotConnection } from './db/merchants';
-import { getRecentSyncLog } from './db/syncLog';
+import { getRecentSyncLog, deleteOldSyncLog } from './db/syncLog';
 import { validateDealRules, DealRuleValidationError } from './hubspot/dealRules';
 import { registerWebhooksForShop, getWebhookRegistrationStatus } from './shopify/webhookRegistration';
 import { renderDashboardPage } from './dashboardPage';
@@ -282,7 +282,51 @@ app.post('/merchants/:shop/admin-key/regenerate', apiRateLimiter, requireAdminOr
   });
 });
 
-app.listen(config.server.port, () => {
+const server = app.listen(config.server.port, () => {
   console.log(`Server listening on http://localhost:${config.server.port}`);
   console.log(`Health check: http://localhost:${config.server.port}/health`);
 });
+
+// Runs once shortly after boot and then daily — matches ensureSchema's own
+// "lazy, idempotent, runs in every process" style rather than needing a
+// separate Render Cron Job (a paid-tier feature this app doesn't otherwise
+// need). Errors are logged, not thrown: a missed cleanup run must never take
+// the process down or block startup.
+const SYNC_LOG_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+function runSyncLogCleanup(): void {
+  deleteOldSyncLog(config.server.syncLogRetentionDays)
+    .then((deleted) => {
+      if (deleted > 0) console.log(`sync_log retention: deleted ${deleted} row(s) older than ${config.server.syncLogRetentionDays} days.`);
+    })
+    .catch((err) => console.error('sync_log retention cleanup failed:', err));
+}
+setTimeout(runSyncLogCleanup, 10_000).unref();
+const syncLogCleanupInterval = setInterval(runSyncLogCleanup, SYNC_LOG_CLEANUP_INTERVAL_MS);
+syncLogCleanupInterval.unref();
+
+// A Render deploy or restart sends SIGTERM, not a crash — previously
+// unhandled, so in-flight requests were simply severed rather than allowed
+// to finish (pre-launch audit, 2026-07-29). Shopify's own webhook retry
+// covers any request actually lost this way, but closing the HTTP server
+// and DB pool cleanly is strictly better than not trying. Force-exits after
+// 10s in case something hangs during shutdown, rather than leaving Render to
+// SIGKILL on its own schedule.
+function shutdown(signal: string): void {
+  console.log(`${signal} received, shutting down gracefully...`);
+  clearInterval(syncLogCleanupInterval);
+  server.close(() => {
+    pool
+      .end()
+      .then(() => process.exit(0))
+      .catch((err) => {
+        console.error('Error closing database pool during shutdown:', err);
+        process.exit(1);
+      });
+  });
+  setTimeout(() => {
+    console.error('Graceful shutdown timed out, forcing exit.');
+    process.exit(1);
+  }, 10_000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

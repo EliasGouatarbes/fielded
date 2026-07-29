@@ -39,7 +39,7 @@ export function renderDashboardPage(): string {
 <div id="dashboard-content" hidden>
   <section id="status-section">
     <h2>Connection status</h2>
-    <div id="status-body"></div>
+    <div id="status-body" class="table-scroll"></div>
   </section>
 
   <section id="backfill-section">
@@ -52,32 +52,36 @@ export function renderDashboardPage(): string {
     <p class="muted">First matching rule wins. Leave a field blank to match any value. Pipeline/stage/owner are
     HubSpot's own internal identifiers, not display names — the same values the raw API already expects.</p>
     <div id="deal-rules-error"></div>
-    <table>
-      <thead>
-        <tr>
-          <th>Financial status</th>
-          <th>Fulfillment status</th>
-          <th>Cancelled</th>
-          <th>Pipeline</th>
-          <th>Stage</th>
-          <th>Owner</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody id="deal-rules-body"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Financial status</th>
+            <th>Fulfillment status</th>
+            <th>Cancelled</th>
+            <th>Pipeline</th>
+            <th>Stage</th>
+            <th>Owner</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="deal-rules-body"></tbody>
+      </table>
+    </div>
     <button type="button" id="add-rule-btn" class="btn-secondary">+ Add rule</button>
     <button type="button" id="save-rules-btn" class="btn">Save rules</button>
   </section>
 
   <section id="activity-section">
     <h2>Recent activity</h2>
-    <table>
-      <thead>
-        <tr><th>When</th><th>Type</th><th>Shopify ID</th><th>HubSpot ID</th><th>Status</th></tr>
-      </thead>
-      <tbody id="activity-body"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>When</th><th>Type</th><th>Shopify ID</th><th>HubSpot ID</th><th>Status</th></tr>
+        </thead>
+        <tbody id="activity-body"></tbody>
+      </table>
+    </div>
   </section>
 
   <section id="actions-section">

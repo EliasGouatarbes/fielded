@@ -55,6 +55,13 @@ interface WebhookSubscriptionCreateData {
   };
 }
 
+interface WebhookSubscriptionUpdateData {
+  webhookSubscriptionUpdate: {
+    webhookSubscription: ShopifyWebhookNode | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+}
+
 const LIST_QUERY = `#graphql
   query ExistingWebhookSubscriptions($topics: [WebhookSubscriptionTopic!]) {
     webhookSubscriptions(first: 25, topics: $topics) {
@@ -68,6 +75,22 @@ const LIST_QUERY = `#graphql
 const CREATE_MUTATION = `#graphql
   mutation CreateWebhookSubscription($topic: WebhookSubscriptionTopic!, $uri: String!) {
     webhookSubscriptionCreate(topic: $topic, webhookSubscription: { uri: $uri, format: JSON }) {
+      webhookSubscription { id topic uri }
+      userErrors { field message }
+    }
+  }
+`;
+
+// Fixes a real duplication risk found in the pre-launch audit (2026-07-29):
+// if APP_URL ever drifts from the address Shopify actually has on file for a
+// topic (a custom-domain migration, a Render URL change), calling
+// webhookSubscriptionCreate again doesn't fix the stale one — Shopify allows
+// multiple subscriptions per topic, so it silently adds a second, leaving
+// the first (now-dead) one still registered. Updating the existing
+// subscription's `uri` in place is the correct fix for a stale registration.
+const UPDATE_MUTATION = `#graphql
+  mutation UpdateWebhookSubscription($id: ID!, $uri: String!) {
+    webhookSubscriptionUpdate(id: $id, webhookSubscription: { uri: $uri, format: JSON }) {
       webhookSubscription { id topic uri }
       userErrors { field message }
     }
@@ -93,6 +116,18 @@ export function topicsNeedingRegistration(
       address: `${appUrl}/webhooks/shopify/${topic}`,
     }))
     .filter(({ graphqlTopic, address }) => !existing.some((w) => w.topic === graphqlTopic && w.uri === address));
+}
+
+// A topic "needing registration" (topicsNeedingRegistration above) either has
+// no subscription at all (real create case) or one at a stale address (needs
+// updating in place, not a second create — see UPDATE_MUTATION's comment).
+// Exported separately so this distinction is unit-testable without a live
+// call.
+export function findStaleSubscription(
+  existing: ShopifyWebhookNode[],
+  graphqlTopic: string
+): ShopifyWebhookNode | undefined {
+  return existing.find((w) => w.topic === graphqlTopic);
 }
 
 // Shared by registerWebhooksForShop (below) and getWebhookRegistrationStatus
@@ -154,6 +189,24 @@ export async function registerWebhooksForShop(shop: string): Promise<void> {
   }
 
   for (const { topic, graphqlTopic, address } of missing) {
+    const stale = findStaleSubscription(existing, graphqlTopic);
+    if (stale) {
+      const updateData = await shopifyGraphqlRequest<WebhookSubscriptionUpdateData>(
+        shop,
+        UPDATE_MUTATION,
+        { id: stale.id, uri: address },
+        `Shopify update webhook (${topic})`
+      );
+      const { webhookSubscription, userErrors } = updateData.webhookSubscriptionUpdate;
+      if (userErrors.length > 0) {
+        throw new Error(
+          `Failed to update webhook subscription for ${topic}: ${userErrors.map((e) => e.message).join('; ')}`
+        );
+      }
+      console.log(`Updated stale registration: ${topic} -> ${address} (id ${webhookSubscription?.id}, was ${stale.uri})`);
+      continue;
+    }
+
     const createData = await shopifyGraphqlRequest<WebhookSubscriptionCreateData>(
       shop,
       CREATE_MUTATION,
