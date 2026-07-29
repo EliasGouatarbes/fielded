@@ -109,7 +109,7 @@ export function renderDashboardPage(): string {
     keyFormEl.innerHTML = '';
     var missing = document.createElement('p');
     missing.className = 'error';
-    missing.textContent = 'Missing ?shop= in the URL. Use the dashboard link from your HubSpot-connected page.';
+    missing.textContent = "This link is missing your store's address. Use the exact dashboard link you saved when you connected HubSpot.";
     keyFormEl.appendChild(missing);
     return;
   }

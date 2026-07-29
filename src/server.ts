@@ -11,6 +11,7 @@ import { getRecentSyncLog, deleteOldSyncLog } from './db/syncLog';
 import { validateDealRules, DealRuleValidationError } from './hubspot/dealRules';
 import { registerWebhooksForShop, getWebhookRegistrationStatus } from './shopify/webhookRegistration';
 import { renderDashboardPage } from './dashboardPage';
+import { renderPage } from './htmlPage';
 import { TRUST_PROXY_HOPS, apiRateLimiter } from './rateLimit';
 import { backfillMerchant } from './backfillMerchant';
 import { resolveMerchantContext } from './hubspot/tokens';
@@ -63,6 +64,25 @@ app.get('/health', async (_req, res) => {
       connected: dbConnected,
     },
   });
+});
+
+// The bare app URL — what a merchant lands on if they click this app from
+// Shopify Admin's app list (this app isn't embedded, so that just opens
+// application_url directly) or otherwise guesses at the domain. Previously
+// unhandled, so this was a raw, unbranded Express "Cannot GET /" crash
+// (confirmed live in the pre-launch audit, 2026-07-29) — not a recovery
+// flow, just an honest, branded page telling them what this is and where to
+// actually go, since a merchant landing here has no shop context we could
+// use to guess their dashboard URL for them.
+app.get('/', (_req, res) => {
+  res.type('html').send(
+    renderPage(
+      'HubSpot <-> Shopify Sync',
+      `<h1>HubSpot &harr; Shopify Sync</h1>
+      <p>This is the background service that syncs your Shopify store to HubSpot — there's nothing to do here directly.</p>
+      <p>Looking for your dashboard? Use the link you saved when you connected HubSpot. If you can't find it, get in touch below and we'll help you back in.</p>`
+    )
+  );
 });
 
 // --- Merchant dashboard (closes the "no UI after onboarding" gap found in

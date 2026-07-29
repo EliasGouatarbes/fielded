@@ -187,6 +187,26 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
     // lost theirs — there's no other way back in, since only the hash is
     // ever stored). Shown exactly once here, never retrievable again.
     const dashboardUrl = `/dashboard?shop=${encodeURIComponent(shop)}`;
+    const fullDashboardUrl = `${config.server.appUrl}${dashboardUrl}`;
+
+    // This app isn't embedded in Shopify Admin (deliberate, see CLAUDE.md) —
+    // there's no persistent nav entry pointing back here, no email, nothing.
+    // This page is the ONLY place this URL is ever shown, on every render
+    // (first connect and every reconnect alike), unconditionally — losing it
+    // means losing the only way back into the dashboard (pre-launch audit,
+    // 2026-07-29: found via live-testing that both the bare app URL and a
+    // bare /dashboard with no ?shop= are genuine dead ends). Deliberately
+    // blunt rather than buried under "optional, for later" framing, which is
+    // what this said before this fix — that undersold exactly the one thing
+    // most worth a merchant's attention on this page.
+    const saveLinkHtml = `
+      <div class="warning">
+        <p><strong>⚠️ Save this link now — bookmark it, or copy it somewhere safe:</strong></p>
+        <pre>${fullDashboardUrl}</pre>
+        <p>This is the only way back to your dashboard — there's no menu, email, or reminder that will show it to you
+        again. It's where you check sync status, see what's synced so far, and change which HubSpot pipeline orders
+        land in.</p>
+      </div>`;
 
     let advancedHtml = '';
     if (!merchant.adminApiKeyHash || regenerateAdminKey) {
@@ -196,13 +216,11 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
         : '';
       advancedHtml = `
         <hr>
-        <p class="muted"><strong>Optional, for later:</strong> nothing below is required to make syncing work — it's only
-        needed if you ever want to check sync status yourself or customize which HubSpot pipeline/stage orders land in.</p>
         <div class="warning">
-          <p><strong>Save this key now — it will not be shown again:</strong></p>
+          <p><strong>Also save this key now — it will not be shown again:</strong></p>
           <pre>${key}</pre>
           ${regeneratedNote}
-          <p>You'll need this same key to sign in on your <a href="${dashboardUrl}">dashboard</a> — paste it there once and it's remembered on this browser.</p>
+          <p>Paste it into the dashboard above once, and this browser will remember it from then on.</p>
         </div>
         <p class="muted">Check sync status any time with:</p>
         <pre>curl -H "Authorization: Bearer ${key}" "${config.server.appUrl}/sync-status?shop=${encodeURIComponent(shop)}"</pre>
@@ -239,6 +257,7 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
         order history this store has — check your <a href="${dashboardUrl}">dashboard</a> any time to see exactly
         when it's finished, or if anything went wrong.</p>
         <a class="btn" href="${dashboardUrl}">View your dashboard &rarr;</a>
+        ${saveLinkHtml}
         ${advancedHtml}`
       )
     );
