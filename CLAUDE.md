@@ -1283,19 +1283,38 @@ marketing suite or Stacksync's enterprise-scale sync.
         store's admin key has been rotated as a result; current value
         recorded outside this file, not printed in chat per 10i's
         credential-hygiene finding.
-      **Still open from this audit** (tracked here, not yet started): 12c
-      (no actual support contact anywhere in the app — still a gap even
-      after 12a's dashboard-link fix, since "contact support" itself still
-      points nowhere), 12d (orders/customers with no email are silently
-      skipped, no log entry), 12e (currency is discarded — Deal `amount`
-      is a bare number with no currency code), 12f (no `.env.example`
-      despite `config.ts` pointing at one), 12g (no
-      `orders/delete`/`customers/delete` webhook handling — orphaned
-      HubSpot records on a Shopify-side delete). Explicitly re-confirmed as
-      still-accepted, not re-opened by this audit: no `app/uninstalled`
-      handler (bounded by `shop/redact`'s 48h window, 10b), no real
-      email/Slack alert for a broken HubSpot connection (10f), and the
-      `ts-node-dev` `npm audit` finding (10k, dev-only, no fix available).
+      **Still open from this audit** (tracked here, not yet started): 12d
+      (orders/customers with no email are silently skipped, no log entry),
+      12e (currency is discarded — Deal `amount` is a bare number with no
+      currency code), 12f (no `.env.example` despite `config.ts` pointing
+      at one), 12g (no `orders/delete`/`customers/delete` webhook handling
+      — orphaned HubSpot records on a Shopify-side delete). Explicitly
+      re-confirmed as still-accepted, not re-opened by this audit: no
+      `app/uninstalled` handler (bounded by `shop/redact`'s 48h window,
+      10b), no real email/Slack alert for a broken HubSpot connection
+      (10f), and the `ts-node-dev` `npm audit` finding (10k, dev-only, no
+      fix available).
+    - **12c. [DONE, VERIFIED, 2026-07-29]** No actual support contact
+      anywhere in the app — "contact support" was mentioned on the error
+      page and (pre-12a) the webhook-failure warning, but pointed nowhere.
+      User chose a plain support-email mailto link (their own address) over
+      a contact form or help doc.
+      Rather than patching just the one error-page sentence, added a
+      persistent `.page-footer` ("Need help? &lt;email&gt;", a subtle
+      bordered-top line) directly into `src/htmlPage.ts`'s shared
+      `renderPage()` shell — every page in this app renders through it
+      (both onboarding pages, every error page, and the 12a dashboard), so
+      a merchant has this before something goes wrong, not only after.
+      Removed the old vague "If this keeps happening, get in touch..."
+      line from `renderErrorPage` since the shared footer now covers it on
+      every error page already, without the duplication.
+      Verified: `npm run build` clean, all 66 tests pass (no logic changed,
+      pure markup). Confirmed via `curl` that the footer's exact mailto
+      markup appears on both a live error page (`GET /auth/hubspot` with no
+      `?shop=`) and the dashboard. Playwright screenshots of the error page
+      in light and dark confirm it renders cleanly — a plain divider line
+      above a centered, small, muted mailto link, consistent with the rest
+      of the page's existing visual language.
     - **12b. [DONE, VERIFIED, 2026-07-29]** Backfill progress on the
       onboarding page never updated or confirmed completion — a merchant
       had no way to know a historical import actually finished (or

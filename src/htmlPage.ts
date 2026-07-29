@@ -1,3 +1,11 @@
+// 12c (functional audit): "contact support" was mentioned on the error page
+// and the webhook-failure warning, but pointed nowhere — no actual channel
+// existed anywhere in the app. Rendered once, in the shared shell, so every
+// page (onboarding, error, and the dashboard) carries it, not just the
+// error path — a merchant should have an escape hatch before something
+// goes wrong too, not only after.
+const SUPPORT_EMAIL = 'elias.gouatarbes@gmail.com';
+
 export interface RenderPageOptions {
   // The onboarding pages (src/shopify/oauth.ts, src/hubspot/oauth.ts) fit
   // comfortably in the default 560px card. The dashboard (src/dashboardPage.ts)
@@ -77,6 +85,8 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
   .error { background: #fdecea; border: 1px solid #f3a9a0; border-radius: 8px; padding: 0.75rem 1rem; color: #7a2018; }
   .muted { color: #666; font-size: 0.88rem; }
   hr { border: none; border-top: 1px solid #e5e7eb; margin: 1.5rem 0; }
+  .page-footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; text-align: center; }
+  .page-footer a { color: inherit; }
   label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.3rem; }
   input[type="text"], input[type="password"], select {
     width: 100%;
@@ -104,6 +114,7 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
     .error { background: #3a1512; border-color: #6b2a20; color: #ffb4a8; }
     .muted { color: #9aa0a6; }
     hr { border-top-color: #2a2e37; }
+    .page-footer { border-top-color: #2a2e37; }
     input[type="text"], input[type="password"], select { background: #24272e; color: #e6e6e6; border-color: #3a3f4a; }
     th, td { border-bottom-color: #2a2e37; }
     th { color: #9aa0a6; }
@@ -115,6 +126,7 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
 <body>
 <div class="card${options.wide ? ' wide' : ''}">
 ${bodyHtml}
+<p class="page-footer muted">Need help? <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a></p>
 </div>
 </body>
 </html>`;
@@ -124,7 +136,6 @@ export function renderErrorPage(message: string): string {
   return renderPage(
     'Connection failed',
     `<h1>⚠️ Couldn't complete the connection</h1>
-    <p>${message}</p>
-    <p class="muted">If this keeps happening, get in touch and mention this exact message.</p>`
+    <p>${message}</p>`
   );
 }
