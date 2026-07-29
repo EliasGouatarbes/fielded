@@ -1164,3 +1164,136 @@ marketing suite or Stacksync's enterprise-scale sync.
     during planning didn't silently break deal-rule routing.
     `npm audit`: unrelated to this change (see 10k above) — confirmed via
     `npm ls @shopify/admin-api-client` that its dependency tree is clean.
+
+12. [IN PROGRESS] Functional audit (2026-07-29), at explicit user request:
+    "did we fix every bug we set out to fix... walk the UX/UI from first
+    download to ongoing use... is this a complete product." Re-verified the
+    three original bugs (order searchability via `dealname`, address field
+    mapping, Deals-not-Orders) directly against current code — all three
+    still genuinely fixed, no regressions from the GraphQL migration (step
+    11) or later work. Then walked the actual merchant journey end to end
+    (install → OAuth → onboarding pages → ongoing sync → error states →
+    uninstall) and produced a punch list. Billing/monetization and the
+    missing privacy policy were explicitly deferred by the user to be
+    handled together, later, right before going live — everything else is
+    being worked one at a time:
+    - **12a. [DONE, VERIFIED, 2026-07-29]** No merchant-facing UI at all
+      after the two onboarding pages — the single biggest gap. Checking
+      sync status or changing deal-routing rules required hand-crafting
+      `curl` requests with a bearer key, completely inaccessible to this
+      app's actual target customer (small, non-technical merchants).
+      Built a full control panel per explicit user decision (view status +
+      edit deal rules + retry webhook registration + regenerate admin key),
+      reusing the existing per-merchant bearer-key auth rather than
+      building a new session system — deliberately deferred before, for
+      good reason, and still not warranted here.
+      New `GET /dashboard?shop=...` (`src/dashboardPage.ts`): a static page
+      with vanilla inline JS (no framework/bundler/new dependency — the
+      one page in this app that genuinely needs client-side interactivity,
+      unlike the two onboarding pages which render once server-side and
+      are done). Auth is a "paste your key" form; the key is held in
+      `localStorage` per shop from then on and attached as a Bearer token
+      to every API call. A single `authedFetch` choke point handles a key
+      going bad *mid-session* (not just on first load) by clearing storage
+      and re-showing the form. This is also the first page in the app
+      where merchant/server-controlled content (sync-log errors, HubSpot
+      portal ids, merchant-typed rule text) is ever reflected into the
+      DOM — every render path uses `createElement`/`textContent`, never
+      `innerHTML` with interpolated data, to keep the zero-XSS-surface
+      guarantee the rest of the app already had.
+      Three new endpoints in `src/server.ts` (same `requireAdminOrMerchantAuth`
+      + `apiRateLimiter` stack as the existing deal-rules routes):
+      `GET /merchants/:shop/status` (connection info + per-topic webhook
+      registration status — new `deriveWebhookStatus`/
+      `getWebhookRegistrationStatus` in `src/shopify/webhookRegistration.ts`,
+      reusing the existing `topicsNeedingRegistration` match logic so the
+      two can't drift apart), `POST .../retry-webhooks` (thin wrapper
+      around the existing `registerWebhooksForShop`), and
+      `POST .../admin-key/regenerate` — a *new* rotation path, distinct
+      from the existing `?regenerate_key=1` HubSpot-reconnect recovery
+      flow (`src/hubspot/oauth.ts`): that one is for a merchant who lost
+      their key entirely; this one is for a merchant who still has a
+      valid key and wants to rotate it, authenticated by that existing key
+      rather than a full OAuth round-trip (`generateAndStoreAdminApiKey`
+      extracted out of the OAuth callback so both paths share it, no
+      behavior change to the callback itself). The deal-rules editor and
+      activity feed reuse the existing `GET`/`PUT /merchants/:shop/deal-rules`
+      and `GET /sync-status` endpoints as-is. Also added a "View your
+      dashboard →" link to the HubSpot-connected success page, and
+      changed the webhook-registration-failure message from "run
+      `npm run register-webhooks`" (only the developer can do that) to
+      "retry it from your dashboard" — closing that UX gap as a direct
+      side effect of this work, not a separate pass.
+      `src/htmlPage.ts` gained a `{wide: true}` option (a wider card, 820px
+      vs. the onboarding pages' 560px) and shared form/table/badge CSS,
+      reused by the dashboard rather than it carrying its own stylesheet.
+      New tests (`src/shopify/webhookRegistration.test.ts`):
+      `deriveWebhookStatus` against none/all/partial-registered and a
+      stale-uri case — mirrors the existing `topicsNeedingRegistration`
+      tests almost 1:1. 66 tests pass (62 prior + 4 new); clean build.
+      Not unit tested, by explicit, documented scope boundary matching
+      this project's established precedent: the three new route handlers
+      (thin glue over already-tested functions, same category as
+      `webhooks.ts`'s untested routes — 10j's own finding is the concrete
+      precedent that routing bugs need live verification, not `tsc`, to
+      catch) and the dashboard's inline `<script>` (no jsdom/browser test
+      runner in this repo; adding one for a single admin page would be
+      disproportionate — covered by live verification instead).
+      Live-verified against the real dev store and the deployed Render
+      instance (temporarily installed Playwright locally via
+      `npm install --no-save` for real browser screenshots, removed
+      afterward — confirmed `package.json`/lockfile untouched):
+      - `GET /merchants/:shop/status` returns real data (portal id
+        `148962866`, all 4 webhook topics `registered:true`) with the
+        correct per-merchant key; 401 on a bad key; 404 on an unknown
+        shop; the operator's global key works too.
+      - `POST /merchants/:shop/retry-webhooks` against Render returns
+        `{ok:true}` idempotently (already-registered case); locally
+        (no `https://` `APP_URL`) surfaces the existing guard's message
+        unchanged through the new JSON envelope.
+      - Deal-rules round-trip via raw `curl` against Render: PUT a
+        throwaway rule, confirmed it persisted via GET, reverted to the
+        original empty rules so nothing was left mutated on the real
+        merchant.
+      - Full Playwright pass against the live Render dashboard: key-entry
+        state and populated state (real connection status, webhook
+        badges, recent activity, deal-rules editor) in both light and
+        dark; exercised the rule editor itself (add row, fill fields,
+        confirm no layout overflow in the wider card).
+      - Rate limiting: hammered `GET /merchants/:shop/status` past
+        `apiRateLimiter`'s 60/min — exactly 60 successes then 429,
+        matching the configured limit precisely (no repeat of 10j's
+        router-scoping bug; these routes apply the limiter per-route
+        directly, not via a router-level `.use()`).
+      - **401-mid-session recovery, the one path that genuinely needed a
+        real (not simulated) test**: first attempt corrupted `localStorage`
+        directly and found the dashboard didn't react — turned out to be a
+        flaw in the *test*, not the app: the already-loaded page holds the
+        key in an in-memory JS variable, populated once at sign-in, so
+        patching `localStorage` alone doesn't affect what's actually sent.
+        Redid it correctly — regenerated the admin key server-side via a
+        separate `curl` call (a real, not simulated, invalidation) while
+        the dashboard tab remained open with the old key in memory, then
+        clicked "Retry webhook registration" in that same tab: got a real
+        401, watched the UI clear `localStorage`, hide the dashboard
+        content, and re-show the key form with a clear, correct message,
+        then confirmed the newly-generated key signs back in successfully
+        in the same tab. This exercise also completed the previously-planned
+        regenerate-key live verification in the same pass — the dev
+        store's admin key has been rotated as a result; current value
+        recorded outside this file, not printed in chat per 10i's
+        credential-hygiene finding.
+      **Still open from this audit** (tracked here, not yet started):
+      12b (backfill progress on the onboarding page never updates/confirms
+      completion), 12c (no actual support contact anywhere in the app —
+      still a gap even after 12a's dashboard-link fix, since "contact
+      support" itself still points nowhere), 12d (orders/customers with no
+      email are silently skipped, no log entry), 12e (currency is discarded
+      — Deal `amount` is a bare number with no currency code), 12f (no
+      `.env.example` despite `config.ts` pointing at one), 12g (no
+      `orders/delete`/`customers/delete` webhook handling — orphaned
+      HubSpot records on a Shopify-side delete). Explicitly re-confirmed as
+      still-accepted, not re-opened by this audit: no `app/uninstalled`
+      handler (bounded by `shop/redact`'s 48h window, 10b), no real
+      email/Slack alert for a broken HubSpot connection (10f), and the
+      `ts-node-dev` `npm audit` finding (10k, dev-only, no fix available).
