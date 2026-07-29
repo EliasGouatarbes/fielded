@@ -1283,14 +1283,32 @@ marketing suite or Stacksync's enterprise-scale sync.
         store's admin key has been rotated as a result; current value
         recorded outside this file, not printed in chat per 10i's
         credential-hygiene finding.
-      **Still open from this audit** (tracked here, not yet started): 12f
-      (no `.env.example` despite `config.ts` pointing at one), 12g (no
-      `orders/delete`/`customers/delete` webhook handling — orphaned
+      **Still open from this audit** (tracked here, not yet started): 12g
+      (no `orders/delete`/`customers/delete` webhook handling — orphaned
       HubSpot records on a Shopify-side delete). Explicitly re-confirmed as
       still-accepted, not re-opened by this audit: no `app/uninstalled`
       handler (bounded by `shop/redact`'s 48h window, 10b), no real
       email/Slack alert for a broken HubSpot connection (10f), and the
       `ts-node-dev` `npm audit` finding (10k, dev-only, no fix available).
+    - **12f. [DONE, VERIFIED, 2026-07-29]** No `.env.example` existed
+      despite `config.ts`'s own missing-required-var error message pointing
+      new setups at one ("Copy .env.example to .env and fill these in
+      before starting the server.").
+      Added `.env.example` at the project root, mirroring the real `.env`'s
+      structure and its genuinely useful comments (generation commands for
+      `ADMIN_API_KEY`/`OAUTH_STATE_SECRET`/`ENCRYPTION_KEY`, where to find
+      each Shopify/HubSpot credential, which vars are required vs.
+      optional-with-a-default) — every value itself is a generic placeholder
+      (e.g. `postgresql://user:password@host:5432/dbname`,
+      `your-dev-store.myshopify.com`), never a real secret or real
+      infrastructure identifier (no real Supabase host/project ref, no real
+      store domain, no real client IDs). Confirmed `.gitignore` only
+      excludes the literal `.env` filename, not a `.env*` glob, so this new
+      file is tracked normally rather than accidentally ignored too.
+      Pure documentation — no code changed, so no build/test/live
+      verification needed beyond confirming every var name matches
+      `config.ts`'s actual `REQUIRED_VARS` list and optional-var defaults
+      exactly (cross-checked directly against the file).
     - **12e. [DONE, VERIFIED, 2026-07-29]** Currency was discarded — Deal
       `amount` was a bare number with no currency code, risky for any
       merchant whose store currency differs from their HubSpot portal's
