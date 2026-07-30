@@ -2214,7 +2214,7 @@ marketing suite or Stacksync's enterprise-scale sync.
     environment once ready to actually charge merchants — defaults to
     `true` (safe) if never set.
 
-19. [DONE, BUILD-VERIFIED, NOT YET LIVE-TESTED, 2026-07-30] Two small
+19. [DONE, VERIFIED, 2026-07-30] Two small
     pre-launch fixes from user questions about what happens once real
     merchants exist, both deliberately scoped down to "cheapest thing that
     helps" rather than real infrastructure — explicit user call to go live
@@ -2263,13 +2263,23 @@ marketing suite or Stacksync's enterprise-scale sync.
       direct Fielded-merchant relationship (Fielded as its own controller
       of that one field), which the Privacy Policy update already covers,
       not something processed on the merchant's instructions.
-      **Known gaps, not fixed this pass**: the existing dev-store merchant
-      row won't have a contact email until it reconnects (this only fires
-      on the OAuth exchange going forward); and the `shop.contactEmail`
-      GraphQL field itself hasn't been live-verified against the real dev
-      store yet (would need an actual reconnect to trigger) — the
-      try/catch means a failure there is silent and harmless, but this is
-      flagged as unverified, not confirmed working, until that happens.
+      Live-verified against the real dev store without going through a full
+      Shopify reconnect (which would also re-trigger a new billing
+      subscription — `billing.ts`'s `createSubscription` has no
+      already-active check, so a real reconnect creates a redundant
+      Shopify subscription object each time): wrote a throwaway script
+      (`ts-node --transpile-only`, deleted immediately after, never
+      committed) that called `fetchShopContactEmail` directly against the
+      dev store's already-stored access token, then `saveShopifyContactEmail`,
+      then re-read via `getMerchant`. Confirmed live: the GraphQL field
+      returned a real address with the existing OAuth scopes (no new scope
+      needed, as expected), and it round-tripped through the DB correctly.
+      **Known gap, not fixed this pass**: the existing dev-store merchant
+      row still only picked up a contact email via this one-off script,
+      not the real OAuth path (that only fires on a fresh reconnect,
+      which the billing side effect above makes undesirable to trigger
+      just for this) — a real reconnect will exercise it end-to-end
+      naturally whenever one next happens for another reason.
     - **Backfill duplicate-deal risk, onboarding disclosure only.** The
       underlying question: `upsertDealByName` (`src/hubspot/deals.ts`)
       de-duplicates by an *exact* string match on `dealname` against
