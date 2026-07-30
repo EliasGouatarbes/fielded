@@ -30,10 +30,47 @@ app.use(
     verify: (req, _res, buf) => {
       (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
     },
+    // express.json()'s own default is 100kb — found via a stress test
+    // (2026-07-30) to be a real problem, not a theoretical one: a
+    // synthetic-but-realistic order with 400 line items (properties, tax
+    // lines, SKUs — the kind a genuine wholesale/bulk order carries) came
+    // to 140kb and was rejected outright by body-parser before this app's
+    // webhook handler ever ran. That order would never sync: no sync_log
+    // row (the rejection happens before src/shopify/webhooks.ts's code
+    // executes), and Shopify would retry the identical oversized payload
+    // for up to 48 hours, failing the same way every time. 5mb is
+    // generous for any realistic single order while still bounding
+    // worst-case per-request memory; `webhookRateLimiter` (120/min) is the
+    // complementary bound on total volume, same layering already used
+    // elsewhere in this app.
+    limit: '5mb',
   })
 );
 
-app.get('/health', async (_req, res) => {
+// Express 4 does not route a rejected promise from an async handler to
+// error-handling middleware (only Express 5 does) — an unguarded `await`
+// that throws becomes an unhandled promise rejection instead, which on this
+// Node version terminates the *entire* process, not just the one request.
+// Found live in a stress test (2026-07-30): a merchant with a broken/missing
+// HubSpot connection hitting the new hubspot-options route crashed the
+// whole server, not just that request — and the exact same unwrapped-await
+// pattern (`getMerchant` inside `requireAdminOrMerchantAuth`, which every
+// merchant-scoped route below goes through) means an ordinary transient DB
+// hiccup would do the same for literally any authenticated request. This
+// wraps every async route handler/middleware below so any such rejection
+// reaches the error-handling middleware at the bottom of this file (a
+// normal 500) instead of taking the process down. Safe on handlers that
+// already have their own try/catch — it only engages if something throws
+// past that.
+function asyncHandler(
+  fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void>
+): express.RequestHandler {
+  return (req, res, next) => {
+    fn(req, res, next).catch(next);
+  };
+}
+
+app.get('/health', asyncHandler(async (_req, res) => {
   let dbConnected = false;
   try {
     await pool.query('SELECT 1');
@@ -65,7 +102,7 @@ app.get('/health', async (_req, res) => {
       connected: dbConnected,
     },
   });
-});
+}));
 
 // The bare app URL — what a merchant lands on if they click this app from
 // Shopify Admin's app list (this app isn't embedded, so that just opens
@@ -115,11 +152,7 @@ function timingSafeEqualStrings(a: string, b: string): boolean {
   return aBuf.length === bBuf.length && crypto.timingSafeEqual(aBuf, bBuf);
 }
 
-async function requireAdminOrMerchantAuth(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-): Promise<void> {
+const requireAdminOrMerchantAuth = asyncHandler(async (req, res, next) => {
   const provided = req.header('Authorization')?.replace(/^Bearer\s+/i, '') ?? '';
   const shopParam = (req.params.shop as string | undefined) ?? (typeof req.query.shop === 'string' ? req.query.shop : undefined);
   const shopDomain = shopParam ? normalizeShopDomain(shopParam) : undefined;
@@ -143,7 +176,7 @@ async function requireAdminOrMerchantAuth(
 
   req.shopDomain = shopDomain;
   next();
-}
+});
 
 // --- Sync-status log (CLAUDE.md step 6, made per-merchant) ---
 // Also surfaces broken HubSpot connections (10f) — a merchant-scoped
@@ -151,7 +184,7 @@ async function requireAdminOrMerchantAuth(
 // (admin key, no ?shop=) gets every currently-broken shop in one call,
 // since that's the "proactive" part for a single-operator app with no
 // email/Slack integration: this is the thing to actually check.
-app.get('/sync-status', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+app.get('/sync-status', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 500);
   try {
     const entries = await getRecentSyncLog(limit, req.shopDomain);
@@ -166,13 +199,13 @@ app.get('/sync-status', apiRateLimiter, requireAdminOrMerchantAuth, async (req, 
     console.error('Failed to fetch sync log:', err);
     res.status(500).send('Failed to fetch sync log.');
   }
-});
+}));
 
 // --- Deal-mapping rules CRUD (CLAUDE.md multi-merchant step) ---
 // REST-only for now, no UI — merchants (or their own tooling) call this
 // directly with their per-merchant key. PUT replaces the whole ordered
 // array since rule order is semantically meaningful (first match wins).
-app.get('/merchants/:shop/deal-rules', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+app.get('/merchants/:shop/deal-rules', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
   const shopDomain = normalizeShopDomain(req.params.shop);
   const merchant = await getMerchant(shopDomain);
   if (!merchant) {
@@ -180,9 +213,9 @@ app.get('/merchants/:shop/deal-rules', apiRateLimiter, requireAdminOrMerchantAut
     return;
   }
   res.json({ rules: merchant.dealRules, dealPipeline: merchant.dealPipeline, dealStage: merchant.dealStage });
-});
+}));
 
-app.put('/merchants/:shop/deal-rules', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+app.put('/merchants/:shop/deal-rules', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
   const shopDomain = normalizeShopDomain(req.params.shop);
   const merchant = await getMerchant(shopDomain);
   if (!merchant) {
@@ -202,11 +235,11 @@ app.put('/merchants/:shop/deal-rules', apiRateLimiter, requireAdminOrMerchantAut
     console.error('Failed to save deal rules:', err);
     res.status(500).send('Failed to save deal rules.');
   }
-});
+}));
 
 // --- Dashboard data/action endpoints — same auth/rate-limit stack as the
 // deal-rules routes above, consumed by src/dashboardPage.ts's client-side JS.
-app.get('/merchants/:shop/status', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+app.get('/merchants/:shop/status', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
   const shopDomain = normalizeShopDomain(req.params.shop);
   const merchant = await getMerchant(shopDomain);
   if (!merchant) {
@@ -233,7 +266,7 @@ app.get('/merchants/:shop/status', apiRateLimiter, requireAdminOrMerchantAuth, a
     webhooksError,
     backfillStatus: merchant.backfillStatus,
   });
-});
+}));
 
 // Feeds the dashboard's deal-rules editor real pipeline/stage/owner names
 // instead of asking a merchant to type HubSpot's raw internal ids from
@@ -245,9 +278,28 @@ app.get('/merchants/:shop/status', apiRateLimiter, requireAdminOrMerchantAuth, a
 // MISSING_SCOPES errors already name the exact missing scope, per this
 // project's established precedent for diagnosing scope gaps) rather than
 // generalized, so a merchant/operator reading it knows exactly what to fix.
-app.get('/merchants/:shop/hubspot-options', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+app.get('/merchants/:shop/hubspot-options', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
   const shopDomain = normalizeShopDomain(req.params.shop);
-  const ctx = await resolveMerchantContext(shopDomain);
+
+  // resolveMerchantContext throws (rather than returning null) for a
+  // merchant that installed Shopify but never finished — or lost — their
+  // HubSpot connection (src/hubspot/tokens.ts). Found the hard way in a
+  // stress test (2026-07-30): with this call unwrapped, that throw becomes
+  // an unhandled promise rejection inside an async Express 4 route handler
+  // (Express 4 doesn't auto-catch those) — which crashed the *entire*
+  // process on this Node version, not just this one request. Treated the
+  // same as an actual HubSpot API failure below (graceful 200 with a clear
+  // per-field error) rather than a 500, since a merchant with no working
+  // HubSpot connection is an expected, recoverable state, not a bug.
+  let ctx: Awaited<ReturnType<typeof resolveMerchantContext>>;
+  try {
+    ctx = await resolveMerchantContext(shopDomain);
+  } catch (err) {
+    console.error(`No usable HubSpot connection for ${shopDomain} (hubspot-options):`, err);
+    const message = describeOptionsFetchError(err, 'pipeline/stage/owner dropdowns');
+    res.json({ pipelines: null, pipelinesError: message, owners: null, ownersError: message });
+    return;
+  }
   if (!ctx) {
     res.status(404).send('Unknown merchant.');
     return;
@@ -276,9 +328,9 @@ app.get('/merchants/:shop/hubspot-options', apiRateLimiter, requireAdminOrMercha
       ? describeOptionsFetchError(ownersResult.reason, 'the owner list')
       : undefined,
   });
-});
+}));
 
-app.post('/merchants/:shop/retry-webhooks', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+app.post('/merchants/:shop/retry-webhooks', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
   const shopDomain = normalizeShopDomain(req.params.shop);
   const merchant = await getMerchant(shopDomain);
   if (!merchant) {
@@ -293,7 +345,7 @@ app.post('/merchants/:shop/retry-webhooks', apiRateLimiter, requireAdminOrMercha
     console.error(`Retry webhook registration failed for ${shopDomain}:`, err);
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
-});
+}));
 
 // Kicks off another historical backfill (12b, functional audit) — mainly
 // for a failed run, but idempotent (search-before-create throughout) so
@@ -302,7 +354,7 @@ app.post('/merchants/:shop/retry-webhooks', apiRateLimiter, requireAdminOrMercha
 // store's import can take a while, and the caller just wants confirmation
 // it started, not to block on it — progress is visible via the status
 // endpoint above once src/backfillMerchant.ts writes its next transition.
-app.post('/merchants/:shop/retry-backfill', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+app.post('/merchants/:shop/retry-backfill', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
   const shopDomain = normalizeShopDomain(req.params.shop);
   const merchant = await getMerchant(shopDomain);
   if (!merchant) {
@@ -324,14 +376,14 @@ app.post('/merchants/:shop/retry-backfill', apiRateLimiter, requireAdminOrMercha
     console.error(`Failed to start backfill retry for ${shopDomain}:`, err);
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
-});
+}));
 
 // Distinct from the ?regenerate_key=1 HubSpot-reconnect recovery path in
 // src/hubspot/oauth.ts (for a merchant who lost their key entirely) — this
 // is for a merchant who still has a valid key and wants to rotate it, so it
 // only needs the same bearer-key auth every other merchant-scoped route
 // already requires, not a full OAuth round-trip.
-app.post('/merchants/:shop/admin-key/regenerate', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+app.post('/merchants/:shop/admin-key/regenerate', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
   const shopDomain = normalizeShopDomain(req.params.shop);
   const merchant = await getMerchant(shopDomain);
   if (!merchant) {
@@ -344,6 +396,32 @@ app.post('/merchants/:shop/admin-key/regenerate', apiRateLimiter, requireAdminOr
     adminApiKey,
     note: 'Save this now — it will not be shown again. Your previous key no longer works.',
   });
+}));
+
+// Safety net for anything that reaches here unhandled — body-parser's
+// PayloadTooLargeError/malformed-JSON SyntaxError, or any route error that
+// slipped past its own try/catch. Without this, Express's built-in default
+// error handler serves the error straight to the client — confirmed live in
+// a stress test (2026-07-30): an oversized webhook body running locally got
+// back a 413 page with a full stack trace, real local filesystem paths, and
+// dependency internals. Production happened to mask this (an undocumented
+// Render behavior this app shouldn't depend on staying true), so this makes
+// the safe response explicit rather than incidental. Must be the last
+// `app.use` (Express dispatches to the first 4-arg middleware it finds, in
+// registration order) and keep all 4 parameters — that arity, not anything
+// else, is what tells Express this is an error handler.
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const status =
+    (err as { status?: number; statusCode?: number } | undefined)?.status ??
+    (err as { status?: number; statusCode?: number } | undefined)?.statusCode ??
+    500;
+  console.error(`Unhandled error on ${req.method} ${req.path}:`, err);
+  if (res.headersSent) {
+    return;
+  }
+  const message =
+    status === 413 ? 'Request body too large.' : status === 400 ? 'Malformed request body.' : status < 500 ? 'Bad request.' : 'Internal server error.';
+  res.status(status).send(message);
 });
 
 const server = app.listen(config.server.port, () => {

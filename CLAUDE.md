@@ -1900,11 +1900,151 @@ marketing suite or Stacksync's enterprise-scale sync.
     in-memory state) then explicitly reverted the dev store's rules back to
     `[]`, confirming via a direct API call afterward that its real
     deal-rules state was left exactly as found.
-    **Still needed, external to this repo, before the owner dropdown
-    actually works live**: `crm.objects.owners.read` must be added to this
-    HubSpot app's `requiredScopes` (the CLI-managed `app-hsmeta.json` this
-    repo doesn't contain, per 9b's precedent) and `hs project upload` run,
-    then every already-connected merchant (currently just the dev store)
-    must redo `/auth/hubspot` to pick up the new scope. Until then the
-    dashboard degrades gracefully exactly as verified above — this isn't a
-    launch blocker, just an incomplete feature.
+    **[UPDATE, 2026-07-30]** `crm.objects.owners.read` was already present
+    in `app-hsmeta.json`'s `requiredScopes` (found at
+    `C:\Users\elias\OneDrive\Desktop\hubspot-oauth-app\src\app\app-hsmeta.json`,
+    a sibling location to this repo per 9b's precedent) but had never been
+    pushed — `hs project upload` run from that directory, build #5
+    succeeded and deployed to the `hubshop` account (148962866). This
+    repo's dashboard/deal-rules changes were also committed and pushed to
+    `main` (`eaf8ffb`), confirmed live on Render (`/health` shows the
+    matching commit). Still outstanding: the dev store itself needs to
+    redo `/auth/hubspot` against the production URL to actually pick up
+    the new scope — until then the dashboard keeps degrading gracefully
+    exactly as verified above.
+
+16. [DONE, VERIFIED, 2026-07-30] Final stress test, at explicit user
+    request ("run one final stress test for the whole app. Be as thorough
+    as you can, think of everything") — load/concurrency/adversarial-input
+    testing specifically, distinct from steps 10/12/13/14's functional and
+    security audits (which reviewed code and tested happy-path + known
+    edge cases, not deliberate abuse or scale). Found and fixed two real
+    bugs, both live-verified before and after the fix; confirmed several
+    other properties hold under real pressure rather than assuming they
+    still did after this session's dashboard changes.
+
+    **16a. Critical: an ordinary error could crash the entire process, not
+    just fail one request.** Found while testing the new
+    `/merchants/:shop/hubspot-options` route (step 15) against a merchant
+    with no working HubSpot connection: `resolveMerchantContext` throws
+    for that case (by design, `hubspot/tokens.ts`), and that call wasn't
+    wrapped in try/catch. Confirmed live: one such request killed the
+    entire local dev server (`curl` got `Connection refused` on every
+    subsequent request, including `/health`, until manually restarted) —
+    the crash log showed `[ERROR] ... Error: No HubSpot connection for
+    stress-hangtest-fake.myshopify.com...` right before the process died.
+    Root cause, general not specific to this route: Express 4 does not
+    route a rejected promise from an async handler to error-handling
+    middleware (only Express 5 does), so an unguarded `await` that throws
+    becomes an unhandled promise rejection — which terminates the whole
+    Node process on this Node version (v24), not just the request.
+    Checking further found this was systemic, not confined to the one new
+    route: `requireAdminOrMerchantAuth` itself — the auth middleware every
+    merchant-scoped route runs through — does `await getMerchant(shopDomain)`
+    with no try/catch, meaning an ordinary transient DB hiccup (this app's
+    own `pool.on('error')` fix, 14a, already establishes Supabase's pooler
+    recycles idle connections routinely) hitting mid-query during *any*
+    authenticated request could take the whole service down for every
+    merchant, not just error the one request. Nearly every route in
+    `server.ts` had the same unwrapped-`await getMerchant(...)` pattern
+    (the one exception, `/sync-status`, already wrapped its own body in
+    try/catch).
+    Fixed systemically rather than patching each call site: new
+    `asyncHandler()` wrapper (`server.ts`) that catches any rejection from
+    an async handler/middleware and forwards it to `next(err)`, landing on
+    the error-handling middleware from 16b below instead of crashing.
+    Applied to `requireAdminOrMerchantAuth` and every async route handler
+    in the file (harmless on ones that already have their own try/catch —
+    it only engages if something throws past that).
+    Verified: rebuilt the exact crash scenario after the fix (same fake
+    merchant, no HubSpot connection) — now a clean `200` with
+    `{pipelines: null, pipelinesError: "No HubSpot connection for...",
+    ...}`, confirmed via `/health` immediately after that the process
+    stayed up, then fired it 10x concurrently for good measure (still all
+    `200`, still up). Full regression sweep across every route afterward
+    (valid key, invalid key, missing key, unknown shop, webhook route) —
+    all returned their expected status codes, no behavior change on the
+    happy path. `npm run build` clean, all 81 tests pass (this is
+    routing/process-lifecycle behavior, not pure logic — verified live per
+    this project's established precedent, e.g. 10j, rather than unit
+    tested). Seeded/deleted the fake merchant row via direct DB calls, same
+    pattern as prior GDPR/hang tests — real dev store's row untouched
+    throughout.
+
+    **16b. Real functional bug: a large real order would silently,
+    permanently fail to sync.** `express.json()`'s default body-size limit
+    is 100kb, never overridden. Built a realistic synthetic order (400
+    line items with properties/tax-lines/SKUs — the shape a genuine
+    wholesale/bulk order has) that came to 140kb and confirmed live: `413
+    Payload Too Large`, rejected by body-parser before this app's webhook
+    handler ever runs — meaning no `sync_log` row (nothing to see in the
+    dashboard), and Shopify would retry the identical oversized payload
+    for up to 48 hours, failing identically every time. That order would
+    never sync, with zero visibility to the merchant.
+    Also found in the same test: with no custom error-handling middleware
+    at all, Express's default error handler served the raw error straight
+    to the client — confirmed live locally: a full stack trace with real
+    local filesystem paths and dependency internals in the 413 response
+    body. Checked whether production was equally exposed: it wasn't (an
+    undocumented Render behavior masked it), but the app shouldn't depend
+    on that staying true.
+    Fixed both: raised the body limit to `5mb` (generous for any real
+    order; `webhookRateLimiter`, 120/min, is the complementary bound on
+    total volume — same layering this app already uses elsewhere), and
+    added a global error-handling middleware (last `app.use`, correct
+    4-arg arity) that logs full detail server-side and returns a short,
+    accurate, non-leaking message keyed off status (413/400/other-4xx/5xx)
+    to the client — this is also what 16a's `asyncHandler` rejections now
+    land on.
+    Verified: the same 140kb order now passes body-parsing and correctly
+    reaches the HMAC check (`401`, since the test used a fake signature) —
+    confirming a real large order would now actually reach the sync logic.
+    A genuinely huge 6mb payload still cleanly `413`s with the new short
+    message, no stack trace. A malformed-JSON body cleanly `400`s
+    ("Malformed request body.", not "Internal server error" — caught and
+    fixed a wording bug where the first pass mislabeled a client error as
+    a server one). Server stayed healthy throughout every case.
+
+    **Confirmed still holding, not just assumed, after this session's
+    dashboard changes:**
+    - Concurrent-webhook dedup (the original step-8 fix): 25 fully
+      concurrent, byte-identical signed `orders/create` webhooks for a
+      brand-new email/order name converged on exactly one contact and one
+      deal (previously only tested at 5-concurrent) — confirmed via
+      `sync_log` (50 entries, 2 distinct HubSpot ids) and live HubSpot
+      lookups; both test records archived afterward.
+    - Rate limiting: `apiRateLimiter` (60/min) hammered on the new
+      `hubspot-options` route — exactly 60 successes then `429`, and
+      confirmed the budget is correctly *shared* across all
+      `apiRateLimiter`-protected routes (a fresh `/sync-status` call was
+      also `429` immediately after), while `/health`, `/auth/hubspot`, and
+      the webhook receiver (separate limiters) were unaffected — no repeat
+      of 10j's router-scoping bug.
+      DB pool under pressure: 40 concurrent `/sync-status` calls (pure DB
+      reads, no HubSpot calls) against `pg`'s default pool size of 10 all
+      succeeded in under a second — confirms the pool queues excess
+      demand rather than erroring, at a load meaningfully above this app's
+      actual target scale.
+    - Adversarial deal-rules input, all against the live local server: a
+      2000-rule payload (156kb) saved and validated in under a second; a
+      SQL-injection string (`x'; DROP TABLE merchants;--`) and an XSS
+      payload (`<script>alert(document.cookie)</script>`) in
+      pipeline/owner fields were both stored as inert literal text
+      (parameterized queries; the merchants table was confirmed intact
+      afterward) and, checked with a real headless browser
+      (`page.on('dialog')` listening for an `alert()`), rendered as
+      escaped plain text in the dashboard's "not in current list" fallback
+      option — no dialog fired, no live `<script>` element in the DOM.
+      Malformed shapes (rules as a string, wrong field types, non-object
+      `when`, a `__proto__` key) were all cleanly rejected with clear `400`
+      messages by the existing validator, or — for `__proto__` — silently
+      and safely stripped, since `validateDealRules` builds a fresh object
+      from known fields rather than spreading user input.
+    - In-process caches (`idCache.ts`, `mutex.ts`): re-read, still exactly
+      as documented — grow one entry per distinct key for the life of the
+      process, no eviction. Pre-existing, deliberately accepted risk at
+      this app's target scale (not re-litigated, still correct).
+
+    Committed as part of this session's work; not yet pushed/deployed —
+    the crash fix (16a) in particular should ship before any real
+    merchant traffic depends on the dashboard.
