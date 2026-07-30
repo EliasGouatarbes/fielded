@@ -239,6 +239,22 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async
         <code>${config.server.appUrl}/auth/hubspot?shop=${encodeURIComponent(shop)}&amp;regenerate_key=1</code> to get a new one.</p>`;
     }
 
+    // Found via live-testing this whole flow end to end (2026-07-30): the
+    // dashboard link and admin key sat at the very bottom of this page,
+    // under the checklist/explanatory text and the "View your dashboard"
+    // button — easy to miss, for the one thing on this page that's actually
+    // unrecoverable if skipped. This banner sits directly under the
+    // headline instead, before anything else, so it's the first thing read
+    // rather than something a merchant has to scroll past everything else
+    // to discover.
+    const keyWillShow = !merchant.adminApiKeyHash || regenerateAdminKey;
+    const topSaveNoticeHtml = `
+      <div class="warning">
+        <p style="margin:0;"><strong>⚠️ Before anything else:</strong> save your dashboard link${
+          keyWillShow ? ' and admin key' : ''
+        } near the bottom of this page — <a href="#save-info">jump there now</a>. Shown once, right here, never again.</p>
+      </div>`;
+
     const webhookChecklistItem = webhooksRegistered
       ? '<li>✅ Webhooks registered — new orders and customers will sync automatically</li>'
       : '<li>⚠️ Webhook registration failed — see warning below</li>';
@@ -254,6 +270,7 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async
       renderPage(
         'HubSpot connected',
         `<h1>${headline}</h1>
+        ${topSaveNoticeHtml}
         <p><strong>${shop}</strong> is connected to HubSpot portal <strong>${portalId}</strong>.</p>
         <ul class="checklist">
           <li>✅ Shopify connected</li>
@@ -270,8 +287,10 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async
         ready. There's a note there worth reading first if you've ever had Shopify orders syncing into HubSpot Deals
         before connecting Fielded.</p>
         <a class="btn" href="${dashboardUrl}">View your dashboard &rarr;</a>
-        ${saveLinkHtml}
-        ${advancedHtml}`
+        <div id="save-info">
+          ${saveLinkHtml}
+          ${advancedHtml}
+        </div>`
       )
     );
   } catch (err) {

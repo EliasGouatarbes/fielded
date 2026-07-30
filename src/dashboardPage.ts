@@ -53,7 +53,7 @@ export function renderDashboardPage(): string {
       page) before starting the import below, so we can check with you.</p>
     </div>
     <div id="backfill-body"></div>
-    <button type="button" id="retry-backfill-btn" class="btn-secondary">Start historical import</button>
+    <button type="button" id="retry-backfill-btn" class="btn">Start historical import</button>
   </section>
 
   <section id="deal-rules-section">
@@ -277,16 +277,35 @@ export function renderDashboardPage(): string {
   function updateBackfillButton(backfillStatus) {
     var btn = document.getElementById('retry-backfill-btn');
     if (!btn) return;
+    clearChildren(btn);
     if (!backfillStatus) {
-      btn.textContent = 'Start historical import';
       btn.disabled = false;
+      btn.appendChild(document.createTextNode('Start historical import'));
     } else if (backfillStatus.status === 'running') {
-      btn.textContent = 'Import running...';
       btn.disabled = true;
+      var runningSpinner = document.createElement('span');
+      runningSpinner.className = 'spinner';
+      btn.appendChild(runningSpinner);
+      btn.appendChild(document.createTextNode('Import running...'));
     } else {
-      btn.textContent = 'Run import again';
       btn.disabled = false;
+      btn.appendChild(document.createTextNode('Run import again'));
     }
+  }
+
+  // Immediate feedback the instant the button is clicked, before the
+  // request even resolves — updateBackfillButton() above only fires once
+  // loadDashboard() re-fetches real status afterward, which would otherwise
+  // leave the button looking unresponsive for that round trip.
+  function setBackfillButtonStarting() {
+    var btn = document.getElementById('retry-backfill-btn');
+    if (!btn) return;
+    btn.disabled = true;
+    clearChildren(btn);
+    var spinner = document.createElement('span');
+    spinner.className = 'spinner';
+    btn.appendChild(spinner);
+    btn.appendChild(document.createTextNode('Starting...'));
   }
 
   function renderBackfillStatus(backfillStatus) {
@@ -314,18 +333,41 @@ export function renderDashboardPage(): string {
     badge.textContent = statusText;
     el.appendChild(badge);
 
-    var detail = document.createElement('p');
-    detail.className = 'muted';
-    detail.style.marginTop = '0.4rem';
     if (backfillStatus.status === 'running') {
-      detail.textContent = 'Started ' + formatDate(backfillStatus.startedAt) + '. This page won\\'t update itself — reload to check again.';
-    } else if (backfillStatus.status === 'complete') {
-      detail.textContent = 'Imported ' + backfillStatus.customerCount + ' customer(s) and ' +
-        backfillStatus.orderCount + ' order(s), finished ' + formatDate(backfillStatus.completedAt) + '.';
-    } else if (backfillStatus.status === 'failed') {
-      detail.textContent = 'Failed at ' + formatDate(backfillStatus.completedAt) + ': ' + backfillStatus.error;
+      // Louder than the plain .muted text this used to be (13a/16-era
+      // precedent: important info a merchant shouldn't skim past gets a
+      // .banner-info box, not gray footnote text) — plus a one-click way to
+      // actually check progress, since this page has no auto-polling and a
+      // merchant can't be relied on to remember "reload the page" on their own.
+      var runningBanner = document.createElement('div');
+      runningBanner.className = 'banner-info';
+      runningBanner.style.marginTop = '0.6rem';
+      var runningText = document.createElement('p');
+      runningText.style.margin = '0 0 0.6rem';
+      runningText.textContent = 'Started ' + formatDate(backfillStatus.startedAt) +
+        '. Running in the background — this page won\\'t update on its own.';
+      runningBanner.appendChild(runningText);
+      var refreshBtn = document.createElement('button');
+      refreshBtn.type = 'button';
+      refreshBtn.className = 'btn-secondary';
+      refreshBtn.textContent = 'Refresh status';
+      refreshBtn.addEventListener('click', function () {
+        loadDashboard();
+      });
+      runningBanner.appendChild(refreshBtn);
+      el.appendChild(runningBanner);
+    } else {
+      var detail = document.createElement('p');
+      detail.className = 'muted';
+      detail.style.marginTop = '0.4rem';
+      if (backfillStatus.status === 'complete') {
+        detail.textContent = 'Imported ' + backfillStatus.customerCount + ' customer(s) and ' +
+          backfillStatus.orderCount + ' order(s), finished ' + formatDate(backfillStatus.completedAt) + '.';
+      } else if (backfillStatus.status === 'failed') {
+        detail.textContent = 'Failed at ' + formatDate(backfillStatus.completedAt) + ': ' + backfillStatus.error;
+      }
+      el.appendChild(detail);
     }
-    el.appendChild(detail);
   }
 
   function renderActivity(entries) {
@@ -699,17 +741,21 @@ export function renderDashboardPage(): string {
 
   document.getElementById('retry-backfill-btn').addEventListener('click', function () {
     clearChildren(actionErrorEl);
+    setBackfillButtonStarting();
     authedFetch('/merchants/' + shop + '/retry-backfill', { method: 'POST' })
       .then(function (data) {
-        if (data && data.ok) {
-          loadDashboard();
-        } else {
+        if (!(data && data.ok)) {
           showActionError((data && data.error) || 'Retry failed.');
         }
+        // Always re-fetches real status, success or not — restores the
+        // button to an accurate label/enabled-state either way rather than
+        // leaving it stuck on the "Starting..." spinner from above.
+        loadDashboard();
       })
       .catch(function (err) {
         if (err.message === 'unauthorized') return;
         showActionError(err.message);
+        loadDashboard();
       });
   });
 

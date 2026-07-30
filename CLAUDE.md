@@ -2352,3 +2352,74 @@ marketing suite or Stacksync's enterprise-scale sync.
     button for a real end-to-end trigger this pass, since the underlying
     `retry-backfill` endpoint's own logic wasn't touched — only where the
     button lives and what it's labeled.
+
+20. [DONE, VERIFIED, 2026-07-30] Two real UX issues, found by the user
+    walking through the entire real merchant workflow themselves for the
+    first time — a fresh Shopify dev store, the real `/auth/shopify`
+    entry point, real Shopify billing confirmation, real HubSpot connect —
+    rather than anything caught by code review. Both on the pages step 19
+    had just touched.
+    - **The dashboard link and admin key were still easy to miss**, even
+      after 19's dashboard/backfill work — they're the last thing on the
+      "Step 2 of 2" page, under the checklist, the explanatory paragraphs,
+      and the "View your dashboard" button, for what is the single most
+      unrecoverable thing on that page (the admin key is shown exactly
+      once, ever). Fixed by adding a `.warning` banner directly under the
+      `<h1>` headline — the first thing on the page, before anything
+      else — with an anchor link (`#save-info`, wrapping the existing
+      `saveLinkHtml`/`advancedHtml` blocks) that jumps straight down to
+      them. Text adapts to whether an admin key will actually render this
+      time (`keyWillShow` — a reconnect without `?regenerate_key=1` and an
+      existing key on file doesn't show one), so it doesn't tell a
+      reconnecting merchant to go save a key they won't be shown.
+      Deliberately a pointer-plus-anchor rather than reordering the whole
+      page (moving the warning block itself to the top) — keeps the
+      existing narrative (what happened → what's next → save this)
+      intact while still guaranteeing the critical info isn't the first
+      thing skipped past.
+    - **The "Start historical import" button, introduced in step 19,
+      looked like a secondary/throwaway action** (it used `.btn-secondary`,
+      shared with things like "Retry webhook registration") for what's
+      actually the primary action of that whole section, and gave no
+      feedback between clicking it and the page eventually re-rendering —
+      a merchant had no way to tell the click registered at all. Fixed
+      three ways:
+      - Switched the button to `.btn` (the same primary orange used for
+        "View your dashboard"/"Save rules"), and added a `.spinner`
+        (pure-CSS rotating-border keyframe, no new dependency, matching
+        this app's established no-external-assets approach) plus a subtle
+        press animation (`transform: scale(0.96)` on `:active`) shared by
+        both button classes — immediate visual feedback on click, not just
+        eventually-different button text.
+      - `setBackfillButtonStarting()` fires the instant the button is
+        clicked, showing the spinner + "Starting..." before the network
+        request even resolves — `updateBackfillButton()` alone only fires
+        once `loadDashboard()` re-fetches real status afterward, which
+        left the button looking unresponsive for that round trip.
+        Restored correctly even on failure: both the success and error
+        paths of the click handler now call `loadDashboard()` (previously
+        only success did), so a failed request doesn't leave the button
+        stuck showing "Starting..." forever.
+      - The "page won't update itself, reload to check again" message —
+        previously plain `.muted` text, the same easy-to-skim-past problem
+        19's own warning had before its own fix — is now a `.banner-info`
+        box (same treatment as the HubSpot-scope-degradation notice, step
+        15) with an actual **"Refresh status" button** inline, rather than
+        relying on a merchant to remember to reload the browser tab
+        themselves.
+    `npm run build` clean; all 81 tests pass unchanged (pure markup/CSS and
+    dashboard JS glue, same established live-verification-over-unit-testing
+    precedent as 19). Live-verified: started the local dev server against
+    the same live Supabase database, curled the real rendered
+    `/dashboard?shop=...` HTML to confirm the button now renders with
+    `class="btn"` and the new spinner/banner-info CSS and JS are present,
+    and re-ran the same `node --check` pass on the extracted inline
+    `<script>` block to confirm the new button-state functions are
+    syntactically valid. The onboarding-page banner (`src/hubspot/oauth.ts`)
+    was reviewed directly against the diff rather than live-rendered this
+    pass — triggering it for real would mean either reusing the connected
+    dev store (which re-creates a billing subscription, per step 19's own
+    documented reason for avoiding that) or standing up another fresh
+    store; low risk regardless, since it's static string interpolation
+    with no new logic branches beyond the already-reviewed `keyWillShow`
+    condition.

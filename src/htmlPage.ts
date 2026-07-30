@@ -84,13 +84,31 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
     font-weight: 600;
     font-size: 0.95rem;
     margin-top: 0.5rem;
+    transition: transform 0.08s ease;
   }
   .btn-secondary {
     background: transparent;
     color: #1a1a1a !important;
     border: 1px solid #d5d8dd;
+    transition: transform 0.08s ease;
   }
   .btn:disabled { opacity: 0.6; cursor: default; }
+  .btn:active:not(:disabled), .btn-secondary:active:not(:disabled) { transform: scale(0.96); }
+  /* Inline loading indicator for a button mid-request (e.g. dashboard's
+     "Start historical import") — pure CSS, no external asset, matching this
+     app's no-dependency-for-a-handful-of-renders philosophy. */
+  .spinner {
+    display: inline-block;
+    width: 0.8em;
+    height: 0.8em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    vertical-align: -0.15em;
+    margin-right: 0.45em;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   code, pre {
     background: #f0f1f3;
     border-radius: 6px;
