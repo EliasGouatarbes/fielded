@@ -112,7 +112,7 @@ Service</a>, which this DPA does not expand.</p>
 <p>This DPA is governed by the laws of Finland, consistent with Section 13 of our Terms of Service.</p>
 
 <h2>14. Contact</h2>
-<p>Questions about this DPA: <a href="mailto:hubshop.support@gmail.com">hubshop.support@gmail.com</a></p>
+<p>Questions about this DPA: <a href="mailto:elias.gouatarbes@gmail.com">elias.gouatarbes@gmail.com</a></p>
 
 <p class="muted">See also our <a href="/privacy-policy">Privacy Policy</a> and <a href="/terms">Terms of Service</a>.</p>
 `;

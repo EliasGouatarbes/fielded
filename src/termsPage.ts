@@ -110,7 +110,7 @@ page. Continuing to use Fielded after a change takes effect means you accept the
 not otherwise resolved will be subject to the exclusive jurisdiction of the courts of Finland.</p>
 
 <h2>14. Contact</h2>
-<p>Questions about these terms: <a href="mailto:hubshop.support@gmail.com">hubshop.support@gmail.com</a></p>
+<p>Questions about these terms: <a href="mailto:elias.gouatarbes@gmail.com">elias.gouatarbes@gmail.com</a></p>
 `;
 
   return renderPage('Terms of Service', body, { wide: true });

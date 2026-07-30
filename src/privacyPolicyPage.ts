@@ -24,7 +24,7 @@ export function renderPrivacyPolicyPage(): string {
 <p>This policy covers <strong>Fielded</strong> (&ldquo;the app,&rdquo; &ldquo;we,&rdquo; &ldquo;us&rdquo;), a Shopify app that
 syncs order and customer data from a merchant's Shopify store into that merchant's own HubSpot account. It's operated by
 <strong>Elias Gouatarbès</strong>, a Finland-based light entrepreneur (kevytyrittäjä) trading as Fielded. You can reach
-us at <a href="mailto:hubshop.support@gmail.com">hubshop.support@gmail.com</a>.</p>
+us at <a href="mailto:elias.gouatarbes@gmail.com">elias.gouatarbes@gmail.com</a>.</p>
 
 <p>If you're a <strong>merchant</strong> using Fielded, this policy explains what we do with your store's data and your
 own account details. If you're a <strong>customer of a store that uses Fielded</strong>, this policy explains what
@@ -106,7 +106,7 @@ merchant's data goes only into that merchant's own HubSpot account.</p>
 
 <h2>8. Your rights, and how to exercise them</h2>
 <p><strong>If you're a merchant:</strong> contact us at
-<a href="mailto:hubshop.support@gmail.com">hubshop.support@gmail.com</a> to access, correct, export, or delete the
+<a href="mailto:elias.gouatarbes@gmail.com">elias.gouatarbes@gmail.com</a> to access, correct, export, or delete the
 connection data described in Section 3. Uninstalling the app also deletes it automatically.</p>
 <p><strong>If you're a customer of a store using Fielded:</strong> because the merchant controls this data, requests
 about your personal information should generally go to that merchant first. We also support Shopify's own
@@ -129,7 +129,7 @@ locations under their own respective privacy policies.</p>
 after a change means you accept the update.</p>
 
 <h2>12. Contact</h2>
-<p>Questions about this policy, or about your data: <a href="mailto:hubshop.support@gmail.com">hubshop.support@gmail.com</a></p>
+<p>Questions about this policy, or about your data: <a href="mailto:elias.gouatarbes@gmail.com">elias.gouatarbes@gmail.com</a></p>
 
 <p class="muted">See also our <a href="/terms">Terms of Service</a>.</p>
 `;

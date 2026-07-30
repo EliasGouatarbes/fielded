@@ -4,7 +4,7 @@
 // page (onboarding, error, and the dashboard) carries it, not just the
 // error path — a merchant should have an escape hatch before something
 // goes wrong too, not only after.
-const SUPPORT_EMAIL = 'hubshop.support@gmail.com';
+const SUPPORT_EMAIL = 'elias.gouatarbes@gmail.com';
 
 // Every current call site of renderPage/renderErrorPage passes either a
 // static string or a value already validated/derived from a trusted source
