@@ -11,6 +11,9 @@ import { getRecentSyncLog, deleteOldSyncLog } from './db/syncLog';
 import { validateDealRules, DealRuleValidationError } from './hubspot/dealRules';
 import { registerWebhooksForShop, getWebhookRegistrationStatus } from './shopify/webhookRegistration';
 import { renderDashboardPage } from './dashboardPage';
+import { renderPrivacyPolicyPage } from './privacyPolicyPage';
+import { renderTermsPage } from './termsPage';
+import { renderDpaPage } from './dpaPage';
 import { renderPage } from './htmlPage';
 import { TRUST_PROXY_HOPS, apiRateLimiter } from './rateLimit';
 import { backfillMerchant } from './backfillMerchant';
@@ -121,6 +124,22 @@ app.get('/', (_req, res) => {
       <p>Looking for your dashboard? Use the link you saved when you connected HubSpot. If you can't find it, get in touch below and we'll help you back in.</p>`
     )
   );
+});
+
+// A real hosted URL here is a hard Shopify App Store submission requirement,
+// not just body copy. DRAFT pending legal review (see CLAUDE.md) — content
+// lives in src/privacyPolicyPage.ts. No auth, no user input reflected
+// anywhere on the page, so no XSS surface to consider here.
+app.get('/privacy-policy', (_req, res) => {
+  res.type('html').send(renderPrivacyPolicyPage());
+});
+
+app.get('/terms', (_req, res) => {
+  res.type('html').send(renderTermsPage());
+});
+
+app.get('/data-processing-agreement', (_req, res) => {
+  res.type('html').send(renderDpaPage());
 });
 
 // --- Merchant dashboard (closes the "no UI after onboarding" gap found in
