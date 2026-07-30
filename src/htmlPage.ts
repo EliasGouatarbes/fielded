@@ -104,6 +104,8 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
   hr { border: none; border-top: 1px solid #e5e7eb; margin: 1.5rem 0; }
   .page-footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; text-align: center; }
   .page-footer a { color: inherit; }
+  .page-footer-links { margin-top: 0.4rem; text-align: center; }
+  .page-footer-links a { color: inherit; }
   label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.3rem; }
   input[type="text"], input[type="password"], select {
     width: 100%;
@@ -223,6 +225,7 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
 <div class="card${options.wide ? ' wide' : ''}">
 ${bodyHtml}
 <p class="page-footer muted">Need help? <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a></p>
+<p class="page-footer-links muted"><a href="/privacy-policy">Privacy Policy</a> &middot; <a href="/terms">Terms of Service</a> &middot; <a href="/data-processing-agreement">Data Processing Agreement</a></p>
 </div>
 </body>
 </html>`;
