@@ -2301,23 +2301,54 @@ marketing suite or Stacksync's enterprise-scale sync.
       false-positive-match risk) — only useful as an input to option 2.
       Explicit user choice: option 1 only, hold 2/3 until this is an
       actual reported problem rather than a hypothetical one.
-      Added a `.muted` paragraph to the HubSpot-connected success page
-      (`src/hubspot/oauth.ts`) — the exact page shown at the moment
-      historical backfill kicks off in the background — explaining that
-      import matches by order number and can leave duplicate deals behind
-      if the merchant's prior sync used a different naming format, and
-      pointing them at support (the existing page-footer contact link, not
-      a repeated raw email address) rather than duplicating that address
-      inline. Deliberately doesn't pause or gate the backfill itself —
-      backfill already starts in the background before this page even
-      renders, so this is reactive (lets an affected merchant flag it so
-      duplicates can be cleaned up by hand), not preventive.
+      Initial version: added a `.muted` paragraph to the HubSpot-connected
+      success page, low-key by design to match "cheapest disclosure."
+      **[REVISED same day, 2026-07-30]** User feedback on that first pass,
+      both points correct: (1) `.muted` styling under a "You're all set 🎉"
+      headline was too easy to skim past for something that can cause real
+      CRM cleanup work; (2) more fundamentally, the disclosure was
+      structurally too late to matter — historical backfill was triggered
+      automatically, in the background, the moment HubSpot connected,
+      *before* this page (carrying the warning) even rendered. A merchant
+      reading the warning attentively could still already have duplicates
+      by the time they finished the sentence.
+      Fixed by making historical import **opt-in** rather than automatic,
+      not just re-styling the same warning. Removed the background
+      `backfillMerchant()` trigger entirely from the HubSpot OAuth callback
+      (`src/hubspot/oauth.ts`) — live sync of *new* orders via webhook is
+      unaffected, only the retroactive import of existing order history
+      changed. The onboarding success page's checklist/copy now says
+      historical import "not started yet, you start this yourself" and
+      points at the dashboard instead of claiming it's already running.
+      The warning itself moved to the dashboard's existing "Historical
+      import" section (`src/dashboardPage.ts`), upgraded to the same
+      `.warning` (bordered, amber) style already used for the failed-
+      webhook and one-time-admin-key notices, positioned directly above
+      the actual trigger — so the warning and the button that starts the
+      risk are now the same place, not separated across two pages and a
+      background job. The existing `POST /merchants/:shop/retry-backfill`
+      endpoint (12b) needed no changes — it already worked correctly for a
+      never-run merchant, "retry" was just the wrong label for a first run.
+      Relabeled/moved the button itself (was under "Actions", now lives in
+      the "Historical import" section next to its own status display) and
+      added `updateBackfillButton()` so its label/enabled-state reflects
+      current status: "Start historical import" (never run), "Import
+      running..." (disabled, prevents a double-trigger), or "Run import
+      again" (already run at least once).
     `npm run build` clean; all 81 tests pass unchanged (no new pure logic
-    — this is DB/OAuth-flow glue and static onboarding copy, consistent
-    with this project's established precedent of live-verifying that
-    category over unit testing it, e.g. 12a). Not yet live-tested against
-    the real dev store or deployed — both changes are additive/non-
-    blocking by construction (a failed contact-email fetch degrades
-    silently; the disclosure copy is inert text), so the risk of shipping
-    without a live pass first is low, but that verification is still
-    outstanding.
+    — this is DB/OAuth-flow glue and static onboarding/dashboard copy,
+    consistent with this project's established precedent of live-verifying
+    that category over unit testing it, e.g. 12a). Live-verified: the
+    contact-email capture via a throwaway script against the real dev
+    store's existing token (see above); the dashboard change by starting
+    the local dev server against the same live Supabase database, curling
+    the actual rendered `/dashboard?shop=...` HTML and confirming the new
+    warning box and single, correctly-relocated button render (no leftover
+    duplicate in the Actions section), and extracting + `node --check`-ing
+    the page's inline `<script>` block to confirm the new
+    `updateBackfillButton` logic is syntactically valid (tsc doesn't check
+    inside a template-literal string, so this was worth confirming
+    directly rather than trusting the build alone). Did not click the
+    button for a real end-to-end trigger this pass, since the underlying
+    `retry-backfill` endpoint's own logic wasn't touched — only where the
+    button lives and what it's labeled.

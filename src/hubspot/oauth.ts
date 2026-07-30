@@ -5,9 +5,8 @@ import { getMerchant, saveHubSpotConnection, saveAdminApiKeyHash } from '../db/m
 import { normalizeShopDomain } from '../shopify/token';
 import { shopify } from '../shopify/oauth';
 import { createOAuthState, verifyOAuthState } from '../oauthState';
-import { exchangeHubSpotToken, fetchHubSpotPortalId, resolveMerchantContext } from './tokens';
+import { exchangeHubSpotToken, fetchHubSpotPortalId } from './tokens';
 import { registerWebhooksForShop } from '../shopify/webhookRegistration';
-import { backfillMerchant } from '../backfillMerchant';
 import { renderPage, renderErrorPage } from '../htmlPage';
 import { oauthRateLimiter } from '../rateLimit';
 import { asyncHandler } from '../asyncHandler';
@@ -180,14 +179,19 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async
       console.error(`Failed to auto-register webhooks for ${shop}:`, err);
     }
 
-    // Historical import runs in the background, not awaited — blocking
-    // this response on it would leave the merchant staring at a blank
-    // browser tab for however long their order history takes to import.
-    // Errors are only logged/visible via /sync-status, same as any other
-    // sync failure; re-running `npm run backfill` is safe if needed.
-    resolveMerchantContext(shop)
-      .then((ctx) => (ctx ? backfillMerchant(shop, ctx) : undefined))
-      .catch((err) => console.error(`Background historical backfill failed for ${shop}:`, err));
+    // Historical import is opt-in, started by the merchant from the
+    // dashboard (POST /merchants/:shop/retry-backfill), NOT auto-triggered
+    // here — deliberately changed from the original always-on-connect
+    // behavior. Reason: a merchant who already had Shopify orders synced
+    // into HubSpot Deals by a different tool (HubSpot's own old native
+    // integration, or a competitor) can end up with duplicate deals if that
+    // tool's dealname format doesn't exactly match Shopify's order number
+    // (upsertDealByName's de-dup key) — auto-starting the import the instant
+    // HubSpot connects, before the merchant has any chance to see that
+    // warning, defeated the point of having one. Live sync (new orders as
+    // they come in via webhook) is unaffected by this change — only the
+    // retroactive import of *existing* order history is now something the
+    // merchant chooses to start.
 
     // Generated on first-ever HubSpot connect for this shop, or again on a
     // reconnect with ?regenerate_key=1 (the recovery path for a merchant who
@@ -255,18 +259,16 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async
           <li>✅ Shopify connected</li>
           <li>✅ HubSpot connected</li>
           ${webhookChecklistItem}
-          <li>⏳ Importing your existing customers and orders (running now, in the background)</li>
+          <li>⏳ Historical import — not started yet, you start this yourself (see below)</li>
         </ul>
         ${webhookWarningHtml}
-        <p>From here, nothing else is required. New Shopify orders and customers will appear in HubSpot automatically
-        as <strong>Contacts</strong> and <strong>Deals</strong> — not HubSpot's native Orders object, so your existing
-        pipelines, lists, and reports keep working. Historical import can take a few minutes depending on how much
-        order history this store has — check your <a href="${dashboardUrl}">dashboard</a> any time to see exactly
-        when it's finished, or if anything went wrong.</p>
-        <p class="muted">Already had Shopify orders syncing into HubSpot Deals before connecting Fielded — from
-        HubSpot's own Shopify integration or a different app? Historical import matches by order number, so if that
-        older sync used a different naming format, it can leave duplicate deals behind. If that sounds like your
-        setup, get in touch (see the link at the bottom of this page) and we'll help clean anything up.</p>
+        <p>New Shopify orders and customers will appear in HubSpot automatically from here on, as
+        <strong>Contacts</strong> and <strong>Deals</strong> — not HubSpot's native Orders object, so your existing
+        pipelines, lists, and reports keep working. Nothing else is required for that part.</p>
+        <p>Importing your <strong>existing</strong> order history is a separate, optional step you start yourself —
+        head to your <a href="${dashboardUrl}">dashboard</a> and click "Start historical import" whenever you're
+        ready. There's a note there worth reading first if you've ever had Shopify orders syncing into HubSpot Deals
+        before connecting Fielded.</p>
         <a class="btn" href="${dashboardUrl}">View your dashboard &rarr;</a>
         ${saveLinkHtml}
         ${advancedHtml}`

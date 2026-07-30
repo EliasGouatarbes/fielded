@@ -44,7 +44,16 @@ export function renderDashboardPage(): string {
 
   <section id="backfill-section">
     <h2>Historical import</h2>
+    <div class="warning">
+      <p><strong>Already had Shopify orders syncing into HubSpot Deals before connecting Fielded</strong> — from
+      HubSpot's own Shopify integration, or a different app?</p>
+      <p>Import matches your Shopify orders to HubSpot deals by order number. If that older sync used a different
+      naming format, running this can create <strong>duplicate deals</strong> for the same order — HubSpot doesn't
+      block that on its own. If this sounds like your setup, get in touch first (see the link at the bottom of this
+      page) before starting the import below, so we can check with you.</p>
+    </div>
     <div id="backfill-body"></div>
+    <button type="button" id="retry-backfill-btn" class="btn-secondary">Start historical import</button>
   </section>
 
   <section id="deal-rules-section">
@@ -83,7 +92,6 @@ export function renderDashboardPage(): string {
     <h2>Actions</h2>
     <div id="action-error"></div>
     <button type="button" id="retry-webhooks-btn" class="btn-secondary">Retry webhook registration</button>
-    <button type="button" id="retry-backfill-btn" class="btn-secondary">Retry historical import</button>
     <button type="button" id="regenerate-key-btn" class="btn-secondary">Regenerate admin key</button>
     <div id="new-key-block"></div>
   </section>
@@ -266,9 +274,25 @@ export function renderDashboardPage(): string {
     }
   }
 
+  function updateBackfillButton(backfillStatus) {
+    var btn = document.getElementById('retry-backfill-btn');
+    if (!btn) return;
+    if (!backfillStatus) {
+      btn.textContent = 'Start historical import';
+      btn.disabled = false;
+    } else if (backfillStatus.status === 'running') {
+      btn.textContent = 'Import running...';
+      btn.disabled = true;
+    } else {
+      btn.textContent = 'Run import again';
+      btn.disabled = false;
+    }
+  }
+
   function renderBackfillStatus(backfillStatus) {
     var el = document.getElementById('backfill-body');
     clearChildren(el);
+    updateBackfillButton(backfillStatus);
 
     if (!backfillStatus) {
       var none = document.createElement('p');
