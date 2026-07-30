@@ -67,11 +67,35 @@ export interface ShopifyOrder {
 // alone, which isn't evidence of a completed purchase. Reviewers of
 // HubSpot's own Shopify integration specifically flagged the opposite bug:
 // contacts staying "leads" forever even after buying.
+// The single choke point for billing enforcement (src/shopify/billing.ts) —
+// syncCustomer/syncOrder below are the one place both the live webhook
+// receiver (src/shopify/webhooks.ts) *and* the historical backfill
+// (src/backfillMerchant.ts) actually funnel through, so checking here
+// covers both rather than needing the same check duplicated at every call
+// site. Retrying a webhook delivery can't fix a lapsed subscription, only
+// the merchant renewing/approving billing can — same "ack success, don't
+// error" reasoning as an already-broken HubSpot connection elsewhere in
+// this file.
+function billingBlocked(merchant: MerchantContext): boolean {
+  return merchant.billingStatus !== 'ACTIVE';
+}
+
 export async function syncCustomer(
   customer: ShopifyCustomer,
   merchant: MerchantContext,
   lifecycleStage?: string
 ): Promise<string | undefined> {
+  if (billingBlocked(merchant)) {
+    await logSyncResult({
+      entityType: 'customer',
+      shopifyId: customer.email ?? (customer.id != null ? String(customer.id) : 'unknown'),
+      status: 'skipped',
+      errorMessage: `Billing is not active for this shop (status: ${merchant.billingStatus ?? 'none'}) — sync paused until it is.`,
+      shopDomain: merchant.shopDomain,
+    });
+    return undefined;
+  }
+
   // Previously a silent no-op — a guest checkout, POS sale, or any other
   // email-less customer vanished with zero trace: no HubSpot contact, no
   // sync_log row, nothing (12d, functional audit). Now logged as its own
@@ -123,6 +147,17 @@ export async function syncCustomer(
 }
 
 export async function syncOrder(order: ShopifyOrder, merchant: MerchantContext): Promise<void> {
+  if (billingBlocked(merchant)) {
+    await logSyncResult({
+      entityType: 'order',
+      shopifyId: order.name,
+      status: 'skipped',
+      errorMessage: `Billing is not active for this shop (status: ${merchant.billingStatus ?? 'none'}) — sync paused until it is.`,
+      shopDomain: merchant.shopDomain,
+    });
+    return;
+  }
+
   try {
     const contactId = order.customer ? await syncCustomer(order.customer, merchant, 'customer') : undefined;
 

@@ -18,6 +18,7 @@ import { renderPage } from './htmlPage';
 import { TRUST_PROXY_HOPS, apiRateLimiter } from './rateLimit';
 import { backfillMerchant } from './backfillMerchant';
 import { resolveMerchantContext } from './hubspot/tokens';
+import { asyncHandler } from './asyncHandler';
 import { fetchDealPipelineOptions, fetchOwnerOptions, describeOptionsFetchError } from './hubspot/options';
 
 const app = express();
@@ -49,29 +50,6 @@ app.use(
     limit: '5mb',
   })
 );
-
-// Express 4 does not route a rejected promise from an async handler to
-// error-handling middleware (only Express 5 does) — an unguarded `await`
-// that throws becomes an unhandled promise rejection instead, which on this
-// Node version terminates the *entire* process, not just the one request.
-// Found live in a stress test (2026-07-30): a merchant with a broken/missing
-// HubSpot connection hitting the new hubspot-options route crashed the
-// whole server, not just that request — and the exact same unwrapped-await
-// pattern (`getMerchant` inside `requireAdminOrMerchantAuth`, which every
-// merchant-scoped route below goes through) means an ordinary transient DB
-// hiccup would do the same for literally any authenticated request. This
-// wraps every async route handler/middleware below so any such rejection
-// reaches the error-handling middleware at the bottom of this file (a
-// normal 500) instead of taking the process down. Safe on handlers that
-// already have their own try/catch — it only engages if something throws
-// past that.
-function asyncHandler(
-  fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void>
-): express.RequestHandler {
-  return (req, res, next) => {
-    fn(req, res, next).catch(next);
-  };
-}
 
 app.get('/health', asyncHandler(async (_req, res) => {
   let dbConnected = false;
@@ -284,6 +262,8 @@ app.get('/merchants/:shop/status', apiRateLimiter, requireAdminOrMerchantAuth, a
     webhooks,
     webhooksError,
     backfillStatus: merchant.backfillStatus,
+    billingStatus: merchant.billingStatus,
+    billingTrialEndsAt: merchant.billingTrialEndsAt,
   });
 }));
 

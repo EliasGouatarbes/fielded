@@ -9,6 +9,7 @@ const TOPICS = [
   'refunds/create',
   'orders/delete',
   'customers/delete',
+  'app_subscriptions/update',
 ];
 const TOPIC_TO_GRAPHQL_ENUM: Record<string, string> = {
   'orders/create': 'ORDERS_CREATE',
@@ -17,10 +18,11 @@ const TOPIC_TO_GRAPHQL_ENUM: Record<string, string> = {
   'refunds/create': 'REFUNDS_CREATE',
   'orders/delete': 'ORDERS_DELETE',
   'customers/delete': 'CUSTOMERS_DELETE',
+  'app_subscriptions/update': 'APP_SUBSCRIPTIONS_UPDATE',
 };
 const APP_URL = 'https://hubshop.onrender.com';
 
-test('topicsNeedingRegistration returns nothing when all 6 topics are already registered', () => {
+test('topicsNeedingRegistration returns nothing when all 7 topics are already registered', () => {
   const existing = TOPICS.map((topic, i) => ({
     id: `gid://shopify/WebhookSubscription/${i}`,
     topic: TOPIC_TO_GRAPHQL_ENUM[topic],
@@ -31,7 +33,7 @@ test('topicsNeedingRegistration returns nothing when all 6 topics are already re
   assert.deepEqual(missing, []);
 });
 
-test('topicsNeedingRegistration returns all 6 topics with correct enum + address when none are registered', () => {
+test('topicsNeedingRegistration returns all 7 topics with correct enum + address when none are registered', () => {
   const missing = topicsNeedingRegistration([], TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
   assert.deepEqual(
     missing,
@@ -51,7 +53,7 @@ test('topicsNeedingRegistration returns only the missing topics on partial overl
   const missing = topicsNeedingRegistration(existing, TOPICS, APP_URL, TOPIC_TO_GRAPHQL_ENUM);
   assert.deepEqual(
     missing.map((m) => m.topic),
-    ['orders/updated', 'customers/create', 'refunds/create', 'orders/delete', 'customers/delete']
+    ['orders/updated', 'customers/create', 'refunds/create', 'orders/delete', 'customers/delete', 'app_subscriptions/update']
   );
 });
 
@@ -94,6 +96,7 @@ test('deriveWebhookStatus reports a mix on partial overlap', () => {
     { topic: 'refunds/create', registered: false },
     { topic: 'orders/delete', registered: false },
     { topic: 'customers/delete', registered: false },
+    { topic: 'app_subscriptions/update', registered: false },
   ]);
 });
 

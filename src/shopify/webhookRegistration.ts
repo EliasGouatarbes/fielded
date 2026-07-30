@@ -16,6 +16,10 @@ import { shopifyGraphqlRequest } from './admin-graphql';
 // left the corresponding HubSpot Deal/Contact orphaned with zero
 // indication anything changed — see src/shopify/webhooks.ts for what these
 // two actually do (log only, deliberately never touch the HubSpot record).
+// app_subscriptions/update is billing (src/shopify/billing.ts): a merchant
+// can cancel their subscription entirely from Shopify's own billing
+// settings, outside this app's control — without this topic there'd be no
+// way to find out, and syncing would keep running for free indefinitely.
 const TOPICS = [
   'orders/create',
   'orders/updated',
@@ -23,6 +27,7 @@ const TOPICS = [
   'refunds/create',
   'orders/delete',
   'customers/delete',
+  'app_subscriptions/update',
 ];
 
 // GraphQL's WebhookSubscriptionTopic enum, one per entry in TOPICS above —
@@ -36,6 +41,7 @@ const TOPIC_TO_GRAPHQL_ENUM: Record<string, string> = {
   'refunds/create': 'REFUNDS_CREATE',
   'orders/delete': 'ORDERS_DELETE',
   'customers/delete': 'CUSTOMERS_DELETE',
+  'app_subscriptions/update': 'APP_SUBSCRIPTIONS_UPDATE',
 };
 
 interface ShopifyWebhookNode {

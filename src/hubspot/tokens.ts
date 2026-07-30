@@ -1,7 +1,7 @@
 import https from 'https';
 import { Client as HubSpotClient } from '@hubspot/api-client';
 import { config } from '../config';
-import { getMerchant, saveHubSpotConnection, markHubSpotConnectionBroken } from '../db/merchants';
+import { getMerchant, saveHubSpotConnection, markHubSpotConnectionBroken, BillingStatus } from '../db/merchants';
 import { withKeyedLock } from '../mutex';
 import { DealRule } from './dealRules';
 
@@ -176,6 +176,7 @@ export interface MerchantContext {
   dealPipeline: string;
   dealStage: string;
   dealRules: DealRule[];
+  billingStatus: BillingStatus | null;
 }
 
 // Resolves everything a sync operation needs for one merchant in one call:
@@ -194,5 +195,6 @@ export async function resolveMerchantContext(shopDomain: string): Promise<Mercha
     dealPipeline: merchant.dealPipeline,
     dealStage: merchant.dealStage,
     dealRules: merchant.dealRules,
+    billingStatus: merchant.billingStatus,
   };
 }

@@ -58,6 +58,15 @@ export interface AppConfig {
   // applied in src/db/merchants.ts). Parsed eagerly so a malformed key fails
   // at boot, not on the first token read/write.
   encryptionKey: Buffer;
+  billing: {
+    // Shopify's Billing API requires an explicit `test: true` flag on every
+    // charge to keep it from being real money (src/shopify/billing.ts).
+    // Defaults to true — a forgotten/missing env var must fail *safe* (no
+    // real charge happens) rather than fail dangerous (a real merchant gets
+    // billed because a flag was never set). Only becomes false with an
+    // explicit "false" in the environment.
+    testMode: boolean;
+  };
 }
 
 const REQUIRED_VARS = [
@@ -115,6 +124,9 @@ function loadConfig(): AppConfig {
     },
     oauthStateSecret: process.env.OAUTH_STATE_SECRET as string,
     encryptionKey: parseEncryptionKey(process.env.ENCRYPTION_KEY as string),
+    billing: {
+      testMode: optional('SHOPIFY_BILLING_TEST_MODE', 'true') !== 'false',
+    },
   };
 }
 

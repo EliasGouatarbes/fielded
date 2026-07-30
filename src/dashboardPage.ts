@@ -176,9 +176,20 @@ export function renderDashboardPage(): string {
     var el = document.getElementById('status-body');
     clearChildren(el);
 
+    var billingLabel = 'Not set up';
+    if (data.billingStatus === 'ACTIVE') {
+      var trialEnds = data.billingTrialEndsAt ? new Date(data.billingTrialEndsAt) : null;
+      billingLabel = (trialEnds && trialEnds > new Date())
+        ? 'Active — free trial until ' + formatDate(data.billingTrialEndsAt)
+        : 'Active';
+    } else if (data.billingStatus) {
+      billingLabel = data.billingStatus.charAt(0) + data.billingStatus.slice(1).toLowerCase();
+    }
+
     var table = document.createElement('table');
     var rows = [
       ['Shop', data.shopDomain],
+      ['Billing', billingLabel],
       ['HubSpot portal', data.hubspotPortalId || 'not connected'],
       ['Default pipeline', data.dealPipeline || '(portal default)'],
       ['Default stage', data.dealStage || '(portal default)']
@@ -194,6 +205,26 @@ export function renderDashboardPage(): string {
       table.appendChild(tr);
     });
     el.appendChild(table);
+
+    if (data.billingStatus !== 'ACTIVE') {
+      var billingWarn = document.createElement('div');
+      billingWarn.className = 'warning';
+      var billingStrong = document.createElement('strong');
+      billingStrong.textContent = 'Billing needs attention.';
+      billingWarn.appendChild(billingStrong);
+      var billingText = document.createElement('p');
+      billingText.style.margin = '0.4rem 0 0';
+      billingText.textContent = 'Syncing is paused until billing is approved' +
+        (data.billingStatus ? ' (current status: ' + data.billingStatus.toLowerCase() + ')' : '') + '.';
+      billingWarn.appendChild(billingText);
+      var billingLink = document.createElement('a');
+      billingLink.href = '/auth/shopify/billing?shop=' + encodeURIComponent(shop);
+      billingLink.textContent = 'Set up billing →';
+      billingLink.style.display = 'inline-block';
+      billingLink.style.marginTop = '0.5rem';
+      billingWarn.appendChild(billingLink);
+      el.appendChild(billingWarn);
+    }
 
     if (data.hubspotConnectionBrokenAt) {
       var warn = document.createElement('div');

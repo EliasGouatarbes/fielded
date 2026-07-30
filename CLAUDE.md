@@ -2048,3 +2048,168 @@ marketing suite or Stacksync's enterprise-scale sync.
     Committed as part of this session's work; not yet pushed/deployed —
     the crash fix (16a) in particular should ship before any real
     merchant traffic depends on the dashboard.
+
+17. [DONE, VERIFIED, 2026-07-30] Legal pages, rebrand, and support contact.
+    User's own legal exposure was a real open question (solo kevytyrittäjä
+    in Finland, no limited company yet) — resolved by: switching to a
+    kevytyrittäjyys invoicing provider that includes free liability
+    insurance (the one practical lever available without an Oy); adding
+    real, hosted `/privacy-policy`, `/terms`, and `/data-processing-agreement`
+    pages (`src/privacyPolicyPage.ts`/`termsPage.ts`/`dpaPage.ts`, same
+    `renderPage` shell as everywhere else) grounded in this app's actual
+    data flows and infrastructure (not generic template text) rather than
+    a free policy generator, which wouldn't have covered the
+    processor/controller relationship or produced a DPA at all; and linking
+    all three from the shared page footer (`src/htmlPage.ts`) so they're on
+    every page, not just directly-linked URLs nobody would find. All three
+    are explicitly drafts pending real legal review, not a substitute for
+    one. Product renamed **Hubshop → Fielded** throughout both the legal
+    pages and this file's own references (the live domain
+    `hubshop.onrender.com`, GitHub repo, and support email
+    `hubshop.support@gmail.com` were deliberately left unchanged — renaming
+    those touches live OAuth redirect URLs and a real email account,
+    out of scope for a docs/branding pass).
+
+18. [DONE, VERIFIED, 2026-07-30] Shopify billing — the single biggest gap
+    behind "go live" once the legal pages existed. User confirmed Shopify's
+    own Billing API (not a separate payment processor) both handles the
+    infrastructure and is close to *required* for an App Store app that
+    charges a subscription. Pricing: **$29/month, single flat plan, no
+    tiers, 30-day free trial**, undercutting the closest real competitor
+    (Unific, ~$99/month once a merchant outgrows their free tier) since
+    this app doesn't bundle a marketing suite, just the sync. Billed in each
+    merchant's own local currency via `shopBillingPreferences`, not a fixed
+    currency — a real mechanism the Billing API provides.
+    New `src/shopify/billing.ts`: `createSubscription` (queries local
+    currency, calls `appSubscriptionCreate` with `trialDays: 30`, saves
+    `PENDING` status + a computed trial-end date) and
+    `refreshBillingStatus` (re-fetches the real status from
+    `currentAppInstallation.allSubscriptions` by id — deliberately not
+    inferred from presence/absence in `activeSubscriptions` alone, which
+    wouldn't distinguish declined from any other non-active state).
+    New `merchants` columns: `billing_subscription_id`, `billing_status`
+    (mirrors Shopify's own `AppSubscriptionStatus` enum values directly —
+    PENDING/ACTIVE/CANCELLED/DECLINED/EXPIRED/FROZEN — rather than
+    inventing a parallel one), `billing_trial_ends_at`.
+    Onboarding order changed deliberately: Shopify connect → **billing
+    confirmation (new)** → HubSpot connect, so nobody reaches full use of
+    the app without at least approving a subscription (even a
+    $0-due-today trial one). Three routes in `src/shopify/oauth.ts`: the
+    existing OAuth callback now just redirects into `/auth/shopify/billing`
+    (creates/re-creates the subscription and redirects to Shopify's own
+    hosted confirmation page — reused as-is for a merchant retrying after
+    declining) and the new `/auth/shopify/billing-callback` (where Shopify
+    sends the merchant back; re-verifies the real status via API rather
+    than trusting anything in the unsigned return-URL query params, then
+    shows either the existing "Step 1 of 2" success page or a "billing
+    wasn't approved" page with a retry link).
+    A merchant can cancel from *inside Shopify's own billing settings*,
+    entirely outside this app — new `app_subscriptions/update` webhook
+    topic (registered like every other topic in
+    `webhookRegistration.ts`) keeps `billing_status` in sync with that.
+    Enforcement lives in exactly one place, `src/sync.ts`'s
+    `syncCustomer`/`syncOrder` (checked and rejected an earlier draft that
+    put it in the webhook receiver's `resolveMerchantOrRespond` instead —
+    that would have missed the historical backfill path entirely, which
+    calls `syncCustomer`/`syncOrder` directly and would have kept running
+    for free indefinitely regardless of billing status). A blocked sync
+    logs a new `'skipped'` entry with a clear reason and ack's 200 — same
+    "retrying can't fix this" reasoning as an already-broken HubSpot
+    connection elsewhere in this file. Surfaced on the dashboard
+    (`GET /merchants/:shop/status` + `dashboardPage.ts`): a Billing row
+    (showing trial end date while trialing) and a warning banner with a
+    direct link to fix it when not active.
+    **Found and fixed while building this, not before**: `webhooks.ts` and
+    `hubspot/oauth.ts` had the identical unguarded-async-handler crash risk
+    16a fixed in `server.ts` — e.g. `orders/delete`'s `logSyncResult` call,
+    and both `hubspot/oauth.ts` routes' initial `getMerchant` calls, none
+    wrapped in try/catch. Extracted the fix into a shared
+    `src/asyncHandler.ts` (was a local function in `server.ts`) and applied
+    it to every async handler in both files — this was a live, exploitable
+    gap in the exact routers a real merchant's HubSpot connect and every
+    Shopify webhook already runs through, not a new one introduced by this
+    step.
+    **Two real platform-level blockers hit live, neither documented
+    anywhere obvious, both required an external action the user had to
+    take by hand:**
+    - `appSubscriptionCreate` failed outright: *"Apps without a public
+      distribution cannot use the Billing API"* — this app's Shopify app
+      (`testAPP`) was still legacy/custom-install distribution. Fixed by
+      the user switching it to **Public distribution** in the Partner
+      Dashboard (Distribution → Public → Select) — no submission or review
+      needed to unlock billing, just the distribution declaration itself.
+      **Worth flagging: Shopify's own UI states this can't be switched
+      back to Custom once made** — a real one-way door, confirmed with the
+      user before they made it rather than treated as a routine toggle.
+      Since this app is headed for public App Store distribution anyway,
+      this is the correct end-state, not a workaround.
+    - After that, even a trivial `{ shop { name } }` query 403'd. The real
+      cause, found via the REST API's more informative error (the GraphQL
+      client's own error body was empty): *"Non-expiring access tokens are
+      no longer accepted for the Admin API."* Shopify requires publicly
+      distributed apps to use **expiring offline access tokens** (rolled
+      out December 2025, mandatory for new public apps as of April 1,
+      2026) — this app's original hand-rolled OAuth flow requested the
+      legacy non-expiring shape, which had been silently grandfathered in
+      under Custom distribution and stopped being accepted the moment
+      distribution flipped to Public. A same-scope reconnect alone did NOT
+      fix this (confirmed live) — reconnecting without also requesting the
+      new shape just issues another legacy token. Fixed by rebuilding
+      Shopify's token layer to match `hubspot/tokens.ts`'s already-proven
+      refresh pattern: `exchangeShopifyToken` (moved out of
+      `shopify/oauth.ts` into `shopify/token.ts`, now shared by both the
+      initial exchange and the new refresh path) requests `expiring: 1`;
+      the response now carries `expires_in` (1 hour), `refresh_token`, and
+      `refresh_token_expires_in` (90 days, rotated on every use — the old
+      refresh token stops working the instant a new one is issued, so the
+      new one must be persisted immediately or the *next* refresh breaks);
+      new `merchants.shopify_refresh_token`/`shopify_token_expires_at`
+      columns (encrypted, same as every other stored token); and
+      `resolveShopifyAccessToken` (`shopify/token.ts`) now transparently
+      refreshes near expiry, wrapped in the same keyed-lock pattern as
+      HubSpot's equivalent so a burst of near-simultaneous calls triggers
+      one refresh, not one per call. A merchant connected before this fix
+      (or seeded from the legacy static `SHOPIFY_ADMIN_ACCESS_TOKEN` env
+      var) has no refresh token on file and simply keeps using its
+      existing token as-is until it reconnects — nothing crashes, it just
+      doesn't benefit from refresh until then.
+      **Known gap, flagged not built this pass**: unlike HubSpot's
+      `hubspotConnectionBrokenAt`, there's no equivalent proactive
+      "Shopify connection broken" tracking yet if a refresh token itself
+      expires (90 days of inactivity) or is revoked — a failure here
+      currently just surfaces as an ordinary logged sync error, not a
+      dashboard-flagged broken-connection state. Revisit if this is ever
+      observed for real, same threshold this app has applied to similar
+      gaps elsewhere.
+    `npm run build` clean; all 81 tests pass (thin SDK wrappers and
+    route/OAuth-flow glue, consistent with this project's established
+    precedent of live-verifying that category over unit testing it).
+    **Fully live-verified end to end against the real dev store, in
+    Shopify's test-charge mode (`test: true`, so no real money moved)**:
+    reconnected Shopify (twice — once to confirm the public-distribution
+    fix, again after the expiring-token fix, both times by the user
+    clicking through Shopify's real screens, since Playwright hit a
+    Cloudflare human-verification wall attempting this headlessly);
+    screenshotted Shopify's own real confirmation page (correct plan name,
+    correct price converted to the store's real local currency — €29.00
+    EUR — correct 30-day trial date, explicit "you will not be billed for
+    this test charge" notice); approved it for real and confirmed via
+    direct DB query that `billing_status` became `ACTIVE`, a real
+    `billing_subscription_id` was stored, and `shopify_refresh_token`/
+    `shopify_token_expires_at` were populated correctly; fired a real
+    signed `orders/create` webhook afterward and confirmed via `sync_log`
+    that it now actually syncs (a real contact + deal created — billing
+    enforcement doesn't false-positive-block a genuinely active merchant);
+    confirmed a live Shopify GraphQL call succeeds cleanly post-fix via the
+    dashboard's own webhook-status check. Test HubSpot contact/deal
+    archived afterward.
+    **Still needed, external to this repo, before this is live in
+    production**: none of this has been deployed yet — Render is still
+    running pre-billing code. Once it is, the real dev store's `merchants`
+    row will have `billing_status = NULL` (new column) until it goes
+    through this same real (test-mode) approval flow against the
+    production URL — meaning live syncing for that store pauses at deploy
+    time until that's done, by design, not a bug. Real (non-test) billing
+    requires flipping `SHOPIFY_BILLING_TEST_MODE=false` in Render's
+    environment once ready to actually charge merchants — defaults to
+    `true` (safe) if never set.

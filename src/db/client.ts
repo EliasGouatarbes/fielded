@@ -52,6 +52,8 @@ export function ensureSchema(): Promise<void> {
       CREATE TABLE IF NOT EXISTS merchants (
         shop_domain TEXT PRIMARY KEY,
         shopify_access_token TEXT NOT NULL,
+        shopify_refresh_token TEXT,
+        shopify_token_expires_at TIMESTAMPTZ,
 
         hubspot_portal_id BIGINT,
         hubspot_access_token TEXT,
@@ -66,6 +68,10 @@ export function ensureSchema(): Promise<void> {
 
         admin_api_key_hash TEXT,
         backfill_status JSONB,
+
+        billing_subscription_id TEXT,
+        billing_status TEXT,
+        billing_trial_ends_at TIMESTAMPTZ,
 
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -88,7 +94,12 @@ export function ensureSchema(): Promise<void> {
       -- (CREATE TABLE IF NOT EXISTS above is a no-op there) — idempotent,
       -- safe to run on every process start same as everything else here.
       ALTER TABLE merchants ADD COLUMN IF NOT EXISTS hubspot_connection_broken_at TIMESTAMPTZ;
+      ALTER TABLE merchants ADD COLUMN IF NOT EXISTS shopify_refresh_token TEXT;
+      ALTER TABLE merchants ADD COLUMN IF NOT EXISTS shopify_token_expires_at TIMESTAMPTZ;
       ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_status JSONB;
+      ALTER TABLE merchants ADD COLUMN IF NOT EXISTS billing_subscription_id TEXT;
+      ALTER TABLE merchants ADD COLUMN IF NOT EXISTS billing_status TEXT;
+      ALTER TABLE merchants ADD COLUMN IF NOT EXISTS billing_trial_ends_at TIMESTAMPTZ;
     `
       )
       .then(() => undefined);

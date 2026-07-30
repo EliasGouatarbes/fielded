@@ -17,9 +17,19 @@ export interface BackfillStatus {
   error?: string;
 }
 
+// Mirrors Shopify's AppSubscriptionStatus enum values directly (PENDING,
+// ACTIVE, CANCELLED, DECLINED, EXPIRED, FROZEN) rather than inventing our
+// own — one less mapping to keep in sync with Shopify's own source of
+// truth. `null` means no subscription has ever been created for this shop
+// (a merchant who installed via Shopify but hasn't reached the billing
+// confirmation step yet).
+export type BillingStatus = 'PENDING' | 'ACTIVE' | 'CANCELLED' | 'DECLINED' | 'EXPIRED' | 'FROZEN';
+
 export interface Merchant {
   shopDomain: string;
   shopifyAccessToken: string;
+  shopifyRefreshToken: string | null;
+  shopifyTokenExpiresAt: Date | null;
   hubspotPortalId: string | null;
   hubspotAccessToken: string | null;
   hubspotRefreshToken: string | null;
@@ -30,11 +40,16 @@ export interface Merchant {
   dealRules: DealRule[];
   adminApiKeyHash: string | null;
   backfillStatus: BackfillStatus | null;
+  billingSubscriptionId: string | null;
+  billingStatus: BillingStatus | null;
+  billingTrialEndsAt: Date | null;
 }
 
 interface MerchantRow {
   shop_domain: string;
   shopify_access_token: string;
+  shopify_refresh_token: string | null;
+  shopify_token_expires_at: Date | null;
   hubspot_portal_id: string | null;
   hubspot_access_token: string | null;
   hubspot_refresh_token: string | null;
@@ -45,12 +60,17 @@ interface MerchantRow {
   deal_rules: DealRule[];
   admin_api_key_hash: string | null;
   backfill_status: BackfillStatus | null;
+  billing_subscription_id: string | null;
+  billing_status: BillingStatus | null;
+  billing_trial_ends_at: Date | null;
 }
 
 function toMerchant(row: MerchantRow): Merchant {
   return {
     shopDomain: row.shop_domain,
     shopifyAccessToken: decrypt(row.shopify_access_token, config.encryptionKey),
+    shopifyRefreshToken: row.shopify_refresh_token ? decrypt(row.shopify_refresh_token, config.encryptionKey) : null,
+    shopifyTokenExpiresAt: row.shopify_token_expires_at,
     hubspotPortalId: row.hubspot_portal_id,
     hubspotAccessToken: row.hubspot_access_token ? decrypt(row.hubspot_access_token, config.encryptionKey) : null,
     hubspotRefreshToken: row.hubspot_refresh_token ? decrypt(row.hubspot_refresh_token, config.encryptionKey) : null,
@@ -61,6 +81,9 @@ function toMerchant(row: MerchantRow): Merchant {
     dealRules: row.deal_rules,
     adminApiKeyHash: row.admin_api_key_hash,
     backfillStatus: row.backfill_status,
+    billingSubscriptionId: row.billing_subscription_id,
+    billingStatus: row.billing_status,
+    billingTrialEndsAt: row.billing_trial_ends_at,
   };
 }
 
@@ -71,15 +94,33 @@ export async function getMerchant(shopDomain: string): Promise<Merchant | null> 
   return row ? toMerchant(row) : null;
 }
 
-// Shopify half of onboarding (existing OAuth handshake, unchanged logic —
-// only the destination table/column names changed).
-export async function saveShopifyToken(shopDomain: string, accessToken: string): Promise<void> {
+// Shopify half of onboarding (initial OAuth handshake) and the ongoing
+// token-refresh path (src/shopify/token.ts) both write through here.
+// `refreshToken`/`expiresAt` are optional: Shopify only issues them for an
+// *expiring* offline token (requested via `expiring: 1` on the exchange,
+// mandatory for a publicly-distributed app since April 2026 — see
+// CLAUDE.md) — a merchant connected before that fix, or seeded from the
+// legacy static SHOPIFY_ADMIN_ACCESS_TOKEN env var, has neither and simply
+// keeps using its access token as-is until they reconnect.
+export async function saveShopifyToken(
+  shopDomain: string,
+  params: { accessToken: string; refreshToken?: string; expiresAt?: Date }
+): Promise<void> {
   await ensureSchema();
   await pool.query(
-    `INSERT INTO merchants (shop_domain, shopify_access_token, updated_at)
-     VALUES ($1, $2, now())
-     ON CONFLICT (shop_domain) DO UPDATE SET shopify_access_token = EXCLUDED.shopify_access_token, updated_at = now()`,
-    [shopDomain, encrypt(accessToken, config.encryptionKey)]
+    `INSERT INTO merchants (shop_domain, shopify_access_token, shopify_refresh_token, shopify_token_expires_at, updated_at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (shop_domain) DO UPDATE SET
+       shopify_access_token = EXCLUDED.shopify_access_token,
+       shopify_refresh_token = EXCLUDED.shopify_refresh_token,
+       shopify_token_expires_at = EXCLUDED.shopify_token_expires_at,
+       updated_at = now()`,
+    [
+      shopDomain,
+      encrypt(params.accessToken, config.encryptionKey),
+      params.refreshToken ? encrypt(params.refreshToken, config.encryptionKey) : null,
+      params.expiresAt ?? null,
+    ]
   );
 }
 
@@ -153,6 +194,38 @@ export async function saveBackfillStatus(shopDomain: string, status: BackfillSta
   await pool.query(`UPDATE merchants SET backfill_status = $2, updated_at = now() WHERE shop_domain = $1`, [
     shopDomain,
     JSON.stringify(status),
+  ]);
+}
+
+// Called right after appSubscriptionCreate succeeds (src/shopify/billing.ts)
+// — status starts as 'PENDING' until the merchant actually approves the
+// charge on Shopify's confirmation page. `trialEndsAt` is computed once
+// here (createdAt + trialDays) rather than re-derived later, since
+// Shopify's AppSubscription object doesn't expose a direct "trial end"
+// field of its own.
+export async function saveBillingSubscription(
+  shopDomain: string,
+  params: { subscriptionId: string; status: BillingStatus; trialEndsAt: Date }
+): Promise<void> {
+  await ensureSchema();
+  await pool.query(
+    `UPDATE merchants
+     SET billing_subscription_id = $2, billing_status = $3, billing_trial_ends_at = $4, updated_at = now()
+     WHERE shop_domain = $1`,
+    [shopDomain, params.subscriptionId, params.status, params.trialEndsAt]
+  );
+}
+
+// Updates just the status — called both right after the merchant approves
+// on Shopify's confirmation page (src/shopify/oauth.ts) and whenever
+// Shopify's app_subscriptions/update webhook reports a change (a
+// cancellation, a declined payment, a freeze) that didn't originate from an
+// action in this app at all.
+export async function updateBillingStatus(shopDomain: string, status: BillingStatus): Promise<void> {
+  await ensureSchema();
+  await pool.query(`UPDATE merchants SET billing_status = $2, updated_at = now() WHERE shop_domain = $1`, [
+    shopDomain,
+    status,
   ]);
 }
 

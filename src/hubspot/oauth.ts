@@ -10,6 +10,7 @@ import { registerWebhooksForShop } from '../shopify/webhookRegistration';
 import { backfillMerchant } from '../backfillMerchant';
 import { renderPage, renderErrorPage } from '../htmlPage';
 import { oauthRateLimiter } from '../rateLimit';
+import { asyncHandler } from '../asyncHandler';
 
 export const hubspotOAuthRouter = Router();
 
@@ -49,7 +50,7 @@ export async function generateAndStoreAdminApiKey(shopDomain: string): Promise<s
 // from that callback's success page) — requiring the merchants row to
 // already exist here is what lets /auth/hubspot/callback trust the shop
 // domain carried in its signed state without a second lookup race.
-hubspotOAuthRouter.get('/auth/hubspot', oauthRateLimiter, async (req, res) => {
+hubspotOAuthRouter.get('/auth/hubspot', oauthRateLimiter, asyncHandler(async (req, res) => {
   const shopParam = req.query.shop;
   if (typeof shopParam !== 'string' || !shopParam) {
     res.status(400).type('html').send(renderErrorPage('Missing "shop" query parameter.'));
@@ -96,9 +97,9 @@ hubspotOAuthRouter.get('/auth/hubspot', oauthRateLimiter, async (req, res) => {
   authorizeUrl.searchParams.set('state', state);
 
   res.redirect(authorizeUrl.toString());
-});
+}));
 
-hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) => {
+hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async (req, res) => {
   const { code, state, error, error_description: errorDescription } = req.query;
 
   // HubSpot redirects here with `error`/`error_description` instead of
@@ -274,4 +275,4 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
       .type('html')
       .send(renderErrorPage('Failed to exchange the authorization code for a HubSpot access token. Check server logs.'));
   }
-});
+}));

@@ -4,11 +4,12 @@ import { config } from '../config';
 import { syncCustomer, syncOrder, ShopifyCustomer, ShopifyOrder } from '../sync';
 import { resolveMerchantContext } from '../hubspot/tokens';
 import { logSyncResult, deleteSyncLogForShop, deleteSyncLogForCustomer } from '../db/syncLog';
-import { deleteMerchant } from '../db/merchants';
+import { deleteMerchant, updateBillingStatus, BillingStatus } from '../db/merchants';
 import { normalizeShopDomain } from './token';
 import { fetchOrderById } from './graphqlMapping';
 import { isAuthError } from '../retry';
 import { webhookRateLimiter } from '../rateLimit';
+import { asyncHandler } from '../asyncHandler';
 
 export const shopifyWebhookRouter = Router();
 // Ahead of the HMAC check below deliberately — the point is to bound the
@@ -67,6 +68,12 @@ async function resolveMerchantOrRespond(
       res.status(200).send('ok');
       return undefined;
     }
+    // Billing enforcement itself lives in src/sync.ts's syncCustomer/
+    // syncOrder, not here — those are the one choke point shared by both
+    // this webhook receiver *and* the historical backfill path
+    // (src/backfillMerchant.ts calls them directly, bypassing this
+    // function entirely), so checking only here would leave backfill able
+    // to run for free indefinitely regardless of billing status.
     return merchant;
   } catch (err) {
     // Shop installed via Shopify but never finished connecting HubSpot.
@@ -101,7 +108,7 @@ function respondToSyncFailure(res: Response, err: unknown, label: string): void 
   res.status(500).send('Sync failed.');
 }
 
-shopifyWebhookRouter.post('/orders/create', async (req, res) => {
+shopifyWebhookRouter.post('/orders/create', asyncHandler(async (req, res) => {
   const order = req.body as ShopifyOrder;
   const merchant = await resolveMerchantOrRespond(req, res, 'order', order.name);
   if (!merchant) return;
@@ -112,9 +119,9 @@ shopifyWebhookRouter.post('/orders/create', async (req, res) => {
   } catch (err) {
     respondToSyncFailure(res, err, 'orders/create');
   }
-});
+}));
 
-shopifyWebhookRouter.post('/orders/updated', async (req, res) => {
+shopifyWebhookRouter.post('/orders/updated', asyncHandler(async (req, res) => {
   const order = req.body as ShopifyOrder;
   const merchant = await resolveMerchantOrRespond(req, res, 'order', order.name);
   if (!merchant) return;
@@ -125,9 +132,9 @@ shopifyWebhookRouter.post('/orders/updated', async (req, res) => {
   } catch (err) {
     respondToSyncFailure(res, err, 'orders/updated');
   }
-});
+}));
 
-shopifyWebhookRouter.post('/customers/create', async (req, res) => {
+shopifyWebhookRouter.post('/customers/create', asyncHandler(async (req, res) => {
   const customer = req.body as ShopifyCustomer;
   const merchant = await resolveMerchantOrRespond(req, res, 'customer', customer.email ?? 'unknown');
   if (!merchant) return;
@@ -138,7 +145,7 @@ shopifyWebhookRouter.post('/customers/create', async (req, res) => {
   } catch (err) {
     respondToSyncFailure(res, err, 'customers/create');
   }
-});
+}));
 
 // Closes 10e (CLAUDE.md pre-launch audit): a refund on an order changes its
 // financial_status/total but nothing else fires for it on the live webhook
@@ -155,7 +162,7 @@ interface RefundPayload {
   order_id?: number;
 }
 
-shopifyWebhookRouter.post('/refunds/create', async (req, res) => {
+shopifyWebhookRouter.post('/refunds/create', asyncHandler(async (req, res) => {
   const { order_id: orderId } = req.body as RefundPayload;
   if (!orderId) {
     res.status(200).send('ok');
@@ -177,7 +184,7 @@ shopifyWebhookRouter.post('/refunds/create', async (req, res) => {
   } catch (err) {
     respondToSyncFailure(res, err, 'refunds/create');
   }
-});
+}));
 
 // Closes 12g (functional audit): deleting an order/customer directly in
 // Shopify previously left the corresponding HubSpot Deal/Contact orphaned
@@ -196,7 +203,7 @@ interface DeletePayload {
   id?: number;
 }
 
-shopifyWebhookRouter.post('/orders/delete', async (req, res) => {
+shopifyWebhookRouter.post('/orders/delete', asyncHandler(async (req, res) => {
   const { id: orderId } = req.body as DeletePayload;
   const shopifyId = orderId != null ? String(orderId) : 'unknown';
   const merchant = await resolveMerchantOrRespond(req, res, 'order', shopifyId);
@@ -210,9 +217,9 @@ shopifyWebhookRouter.post('/orders/delete', async (req, res) => {
     shopDomain: merchant.shopDomain,
   });
   res.status(200).send('ok');
-});
+}));
 
-shopifyWebhookRouter.post('/customers/delete', async (req, res) => {
+shopifyWebhookRouter.post('/customers/delete', asyncHandler(async (req, res) => {
   const { id: customerId } = req.body as DeletePayload;
   const shopifyId = customerId != null ? String(customerId) : 'unknown';
   const merchant = await resolveMerchantOrRespond(req, res, 'customer', shopifyId);
@@ -226,7 +233,36 @@ shopifyWebhookRouter.post('/customers/delete', async (req, res) => {
     shopDomain: merchant.shopDomain,
   });
   res.status(200).send('ok');
-});
+}));
+
+// --- Billing (src/shopify/billing.ts) ---
+// A merchant can cancel, get declined on a payment, or be frozen entirely
+// from *inside Shopify's own billing settings* — outside this app's
+// control and with no other signal reaching us. Bypasses
+// resolveMerchantOrRespond deliberately (same reasoning as the GDPR
+// webhooks below): billing state can change before a shop ever finishes
+// connecting HubSpot, so this must keep working regardless of that
+// connection's state, acting directly against the merchants row via the
+// shop domain the payload itself carries.
+const KNOWN_BILLING_STATUSES: BillingStatus[] = ['PENDING', 'ACTIVE', 'CANCELLED', 'DECLINED', 'EXPIRED', 'FROZEN'];
+
+interface AppSubscriptionUpdatePayload {
+  app_subscription?: { status?: string };
+}
+
+shopifyWebhookRouter.post('/app_subscriptions/update', asyncHandler(async (req, res) => {
+  const shopHeader = req.header('X-Shopify-Shop-Domain');
+  const { app_subscription: appSubscription } = req.body as AppSubscriptionUpdatePayload;
+
+  if (shopHeader && appSubscription?.status && KNOWN_BILLING_STATUSES.includes(appSubscription.status as BillingStatus)) {
+    const shopDomain = normalizeShopDomain(shopHeader);
+    await updateBillingStatus(shopDomain, appSubscription.status as BillingStatus);
+    console.log(`[Billing] app_subscriptions/update — shop=${shopDomain} status=${appSubscription.status}`);
+  } else {
+    console.error(`[Billing] app_subscriptions/update — unrecognized payload: ${JSON.stringify(req.body)}`);
+  }
+  res.status(200).send('ok');
+}));
 
 // --- Shopify's three mandatory GDPR compliance webhooks ---
 // Required for every public Shopify app regardless of what data it stores;
@@ -274,7 +310,7 @@ interface CustomerRedactPayload {
 // Shopify, without the merchant's own judgment, is a bigger call than this
 // webhook should make unilaterally) — both logged so they're not silently
 // skipped.
-shopifyWebhookRouter.post('/customers/redact', async (req, res) => {
+shopifyWebhookRouter.post('/customers/redact', asyncHandler(async (req, res) => {
   const { shop_domain: shopDomainRaw, customer, orders_to_redact: ordersToRedact } = req.body as CustomerRedactPayload;
   const shopDomain = shopDomainRaw ? normalizeShopDomain(shopDomainRaw) : undefined;
 
@@ -288,7 +324,7 @@ shopifyWebhookRouter.post('/customers/redact', async (req, res) => {
       `the corresponding HubSpot Contact (requires merchant judgment) — handle both manually if required.`
   );
   res.status(200).send('ok');
-});
+}));
 
 interface ShopRedactPayload {
   shop_domain?: string;
@@ -297,7 +333,7 @@ interface ShopRedactPayload {
 // The one fully-automatable redact case: ~48h after a shop uninstalls,
 // Shopify requires every trace of it gone. Deletes the merchants row
 // (encrypted tokens included) and every sync_log row for that shop.
-shopifyWebhookRouter.post('/shop/redact', async (req, res) => {
+shopifyWebhookRouter.post('/shop/redact', asyncHandler(async (req, res) => {
   const { shop_domain: shopDomainRaw } = req.body as ShopRedactPayload;
   if (shopDomainRaw) {
     const shopDomain = normalizeShopDomain(shopDomainRaw);
@@ -306,4 +342,4 @@ shopifyWebhookRouter.post('/shop/redact', async (req, res) => {
     console.log(`[GDPR] shop/redact — shop=${shopDomain}: deleted merchant row and all sync_log entries.`);
   }
   res.status(200).send('ok');
-});
+}));

@@ -1,13 +1,14 @@
-import https from 'https';
 import { Router } from 'express';
 import '@shopify/shopify-api/adapters/node';
 import { shopifyApi, ApiVersion } from '@shopify/shopify-api';
 import { config } from '../config';
-import { saveShopifyToken } from '../db/merchants';
-import { normalizeShopDomain } from './token';
+import { getMerchant, saveShopifyToken } from '../db/merchants';
+import { normalizeShopDomain, exchangeShopifyToken } from './token';
 import { createOAuthState, verifyOAuthState } from '../oauthState';
 import { renderPage, renderErrorPage } from '../htmlPage';
 import { oauthRateLimiter } from '../rateLimit';
+import { asyncHandler } from '../asyncHandler';
+import { createSubscription, refreshBillingStatus, BILLING_TRIAL_DAYS } from './billing';
 
 // Also used by server.ts's /health check (sdkLoaded) and by the utils
 // helpers below during the handshake.
@@ -29,50 +30,6 @@ export const shopifyOAuthRouter = Router();
 // silently drop on a plain http://localhost redirect URI.
 const OAUTH_SCOPES = 'read_orders,read_customers,read_products';
 const OAUTH_CALLBACK_PATH = '/auth/shopify/callback';
-
-function fetchShopifyAccessToken(shop: string, code: string): Promise<{ access_token: string; scope: string }> {
-  const payload = JSON.stringify({
-    client_id: config.shopify.apiKey,
-    client_secret: config.shopify.apiSecretKey,
-    code,
-  });
-
-  return new Promise((resolve, reject) => {
-    const req = https.request(
-      {
-        hostname: shop,
-        path: '/admin/oauth/access_token',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          'Content-Length': Buffer.byteLength(payload),
-        },
-      },
-      (res) => {
-        let body = '';
-        res.on('data', (chunk) => {
-          body += chunk;
-        });
-        res.on('end', () => {
-          const status = res.statusCode ?? 0;
-          if (status >= 200 && status < 300) {
-            try {
-              resolve(JSON.parse(body));
-            } catch {
-              reject(new Error(`Could not parse Shopify token response: ${body}`));
-            }
-          } else {
-            reject(new Error(`Shopify token exchange failed (${status}): ${body}`));
-          }
-        });
-      }
-    );
-    req.on('error', reject);
-    req.write(payload);
-    req.end();
-  });
-}
 
 shopifyOAuthRouter.get('/auth/shopify', oauthRateLimiter, (req, res) => {
   const requestedShop =
@@ -100,7 +57,7 @@ shopifyOAuthRouter.get('/auth/shopify', oauthRateLimiter, (req, res) => {
   res.redirect(authorizeUrl.toString());
 });
 
-shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) => {
+shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async (req, res) => {
   const { shop, code, state, hmac } = req.query;
 
   if (
@@ -142,24 +99,39 @@ shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
   }
 
   try {
-    const { access_token: accessToken, scope } = await fetchShopifyAccessToken(cleanShop, code);
-    await saveShopifyToken(normalizeShopDomain(cleanShop), accessToken);
+    // `expiring: 1` requests an *expiring* offline token — mandatory for a
+    // publicly-distributed app as of April 2026 (found live: Shopify
+    // outright rejects this app's old non-expiring tokens the moment it's
+    // public, even on a brand-new exchange — see CLAUDE.md). Without this
+    // flag the response has no refresh_token/expires_in at all, silently
+    // falling back to the legacy non-expiring shape.
+    const tokenResponse = await exchangeShopifyToken(cleanShop, {
+      client_id: config.shopify.apiKey,
+      client_secret: config.shopify.apiSecretKey,
+      code,
+      expiring: 1,
+    });
+    await saveShopifyToken(normalizeShopDomain(cleanShop), {
+      accessToken: tokenResponse.access_token,
+      refreshToken: tokenResponse.refresh_token,
+      expiresAt: tokenResponse.expires_in ? new Date(Date.now() + tokenResponse.expires_in * 1000) : undefined,
+    });
 
     console.log('\n=== Shopify OAuth handshake complete ===');
     console.log(`Shop: ${cleanShop}`);
-    console.log(`Scopes granted: ${scope}`);
-    console.log('Access token saved to the database (merchants table).\n');
-
-    const hubspotConnectUrl = `/auth/hubspot?shop=${encodeURIComponent(normalizeShopDomain(cleanShop))}`;
-    res.type('html').send(
-      renderPage(
-        'Shopify connected',
-        `<h1>Step 1 of 2 &mdash; Shopify connected ✅</h1>
-        <p><strong>${cleanShop}</strong> is linked. Nothing to copy into any config file — the access token is saved automatically.</p>
-        <p>One step left before anything syncs: tell us which HubSpot account this store's contacts and orders should land in.</p>
-        <a class="btn" href="${hubspotConnectUrl}">Connect HubSpot &rarr;</a>`
-      )
+    console.log(`Scopes granted: ${tokenResponse.scope}`);
+    console.log(
+      tokenResponse.refresh_token
+        ? 'Expiring access token + refresh token saved to the database (merchants table).\n'
+        : 'Access token saved to the database (merchants table) — Shopify returned a non-expiring token; refresh will not be available.\n'
     );
+
+    // Billing is a separate hop (Shopify's own hosted confirmation page,
+    // not something rendered here) — handing off to the dedicated billing
+    // route below rather than inlining subscription creation in this
+    // already-large try block, and so the exact same code path is reusable
+    // for a merchant retrying after declining (see /auth/shopify/billing).
+    res.redirect(`/auth/shopify/billing?shop=${encodeURIComponent(normalizeShopDomain(cleanShop))}`);
   } catch (err) {
     console.error('Shopify token exchange failed:', err);
     res
@@ -167,4 +139,100 @@ shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, async (req, res) =
       .type('html')
       .send(renderErrorPage('Failed to exchange the authorization code for an access token. Check server logs.'));
   }
-});
+}));
+
+// Creates (or re-creates, for a merchant retrying after declining) a
+// subscription charge and sends the merchant to Shopify's own hosted
+// confirmation page to approve it — reached both as step 2 of first-time
+// onboarding (redirected here straight from the OAuth callback above) and
+// directly, as the "try again" link on the declined-billing page below.
+// Deliberately sits *before* the HubSpot connect step in the onboarding
+// order: nobody reaches full use of the app without at least approving a
+// subscription (even a $0-due-today trial one).
+shopifyOAuthRouter.get('/auth/shopify/billing', oauthRateLimiter, asyncHandler(async (req, res) => {
+  const shopParam = req.query.shop;
+  if (typeof shopParam !== 'string' || !shopParam) {
+    res.status(400).type('html').send(renderErrorPage('Missing "shop" query parameter.'));
+    return;
+  }
+
+  let shopDomain: string;
+  try {
+    shopDomain = normalizeShopDomain(shopify.utils.sanitizeShop(shopParam, true)!);
+  } catch {
+    res.status(400).type('html').send(renderErrorPage('That doesn\'t look like a valid Shopify store domain.'));
+    return;
+  }
+
+  const merchant = await getMerchant(shopDomain);
+  if (!merchant) {
+    res.status(400).type('html').send(renderErrorPage(`No Shopify installation found for ${shopDomain}. Install via /auth/shopify first.`));
+    return;
+  }
+
+  const returnUrl = `${config.server.appUrl}/auth/shopify/billing-callback?shop=${encodeURIComponent(shopDomain)}`;
+  try {
+    const { confirmationUrl } = await createSubscription(shopDomain, returnUrl);
+    res.redirect(confirmationUrl);
+  } catch (err) {
+    console.error(`Failed to create Shopify subscription for ${shopDomain}:`, err);
+    res.status(502).type('html').send(renderErrorPage('Failed to start billing setup with Shopify. Check server logs.'));
+  }
+}));
+
+// Where Shopify sends the merchant's browser back after they approve or
+// decline on the confirmation page above. Nothing in this URL's own query
+// params is signed or otherwise trustworthy (unlike the real OAuth
+// callback's HMAC+state) — safe regardless, since all this does is ask
+// Shopify's own API for the subscription's real current status and store
+// exactly that, rather than trusting anything the redirect itself claims.
+shopifyOAuthRouter.get('/auth/shopify/billing-callback', oauthRateLimiter, asyncHandler(async (req, res) => {
+  const shopParam = req.query.shop;
+  if (typeof shopParam !== 'string' || !shopParam) {
+    res.status(400).type('html').send(renderErrorPage('Missing "shop" query parameter.'));
+    return;
+  }
+  const shopDomain = normalizeShopDomain(shopParam);
+
+  const merchant = await getMerchant(shopDomain);
+  if (!merchant || !merchant.billingSubscriptionId) {
+    res.status(400).type('html').send(renderErrorPage(`No pending subscription found for ${shopDomain}.`));
+    return;
+  }
+
+  let status: string;
+  try {
+    status = await refreshBillingStatus(shopDomain, merchant.billingSubscriptionId);
+  } catch (err) {
+    console.error(`Failed to confirm billing status for ${shopDomain}:`, err);
+    res.status(502).type('html').send(renderErrorPage('Failed to confirm billing status with Shopify. Check server logs.'));
+    return;
+  }
+
+  if (status !== 'ACTIVE') {
+    const retryUrl = `/auth/shopify/billing?shop=${encodeURIComponent(shopDomain)}`;
+    res.type('html').send(
+      renderPage(
+        'Billing not approved',
+        `<h1>Billing wasn't approved</h1>
+        <p>Shopify reports this subscription as <strong>${status.toLowerCase()}</strong> — Fielded can't sync
+        <strong>${shopDomain}</strong> until a subscription is approved (it starts with a ${BILLING_TRIAL_DAYS}-day
+        free trial, nothing is charged today).</p>
+        <a class="btn" href="${retryUrl}">Try again &rarr;</a>`
+      )
+    );
+    return;
+  }
+
+  const hubspotConnectUrl = `/auth/hubspot?shop=${encodeURIComponent(shopDomain)}`;
+  res.type('html').send(
+    renderPage(
+      'Shopify connected',
+      `<h1>Step 1 of 2 &mdash; Shopify connected ✅</h1>
+      <p><strong>${shopDomain}</strong> is linked and billing is set up (${BILLING_TRIAL_DAYS}-day free trial,
+      nothing charged today). Nothing to copy into any config file — everything's saved automatically.</p>
+      <p>One step left before anything syncs: tell us which HubSpot account this store's contacts and orders should land in.</p>
+      <a class="btn" href="${hubspotConnectUrl}">Connect HubSpot &rarr;</a>`
+    )
+  );
+}));
