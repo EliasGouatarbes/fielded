@@ -43,6 +43,7 @@ export interface Merchant {
   billingSubscriptionId: string | null;
   billingStatus: BillingStatus | null;
   billingTrialEndsAt: Date | null;
+  shopContactEmail: string | null;
 }
 
 interface MerchantRow {
@@ -63,6 +64,7 @@ interface MerchantRow {
   billing_subscription_id: string | null;
   billing_status: BillingStatus | null;
   billing_trial_ends_at: Date | null;
+  shop_contact_email: string | null;
 }
 
 function toMerchant(row: MerchantRow): Merchant {
@@ -84,6 +86,7 @@ function toMerchant(row: MerchantRow): Merchant {
     billingSubscriptionId: row.billing_subscription_id,
     billingStatus: row.billing_status,
     billingTrialEndsAt: row.billing_trial_ends_at,
+    shopContactEmail: row.shop_contact_email,
   };
 }
 
@@ -227,6 +230,22 @@ export async function updateBillingStatus(shopDomain: string, status: BillingSta
     shopDomain,
     status,
   ]);
+}
+
+// Best-effort, non-blocking: fetched right after the Shopify OAuth exchange
+// (src/shopify/oauth.ts) so there's some way to reach a paying merchant
+// directly (e.g. "you need to reconnect HubSpot after this update") without
+// needing real notification infrastructure yet — there's no other contact
+// point captured anywhere in this app. Not encrypted at rest, consistent
+// with shop_domain itself already being plaintext in this same table; this
+// app's existing encryption bar (src/crypto.ts) is reserved for actual
+// access-granting secrets (OAuth tokens), not general account metadata.
+export async function saveShopifyContactEmail(shopDomain: string, contactEmail: string): Promise<void> {
+  await ensureSchema();
+  await pool.query(
+    `UPDATE merchants SET shop_contact_email = $2, updated_at = now() WHERE shop_domain = $1`,
+    [shopDomain, contactEmail]
+  );
 }
 
 export async function saveAdminApiKeyHash(shopDomain: string, hash: string): Promise<void> {

@@ -73,6 +73,8 @@ export function ensureSchema(): Promise<void> {
         billing_status TEXT,
         billing_trial_ends_at TIMESTAMPTZ,
 
+        shop_contact_email TEXT,
+
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
@@ -100,6 +102,7 @@ export function ensureSchema(): Promise<void> {
       ALTER TABLE merchants ADD COLUMN IF NOT EXISTS billing_subscription_id TEXT;
       ALTER TABLE merchants ADD COLUMN IF NOT EXISTS billing_status TEXT;
       ALTER TABLE merchants ADD COLUMN IF NOT EXISTS billing_trial_ends_at TIMESTAMPTZ;
+      ALTER TABLE merchants ADD COLUMN IF NOT EXISTS shop_contact_email TEXT;
     `
       )
       .then(() => undefined);

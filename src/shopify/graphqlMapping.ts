@@ -74,6 +74,22 @@ export const ORDER_BY_ID_QUERY = `#graphql
   }
 `;
 
+// `contactEmail` (the store's own support/business address, not a customer's)
+// replaced the deprecated flat `email` field — same reasoning as the
+// customer email fields above (this app targets API version 2026-07, past
+// the deprecation). Queried once, right after the Shopify OAuth handshake
+// (src/shopify/oauth.ts), purely so there's a way to reach a merchant
+// directly later — this app has no other contact point on file for anyone.
+const SHOP_QUERY = `#graphql
+  query ShopContactInfo {
+    shop { contactEmail }
+  }
+`;
+
+interface ShopQueryData {
+  shop: { contactEmail?: string | null };
+}
+
 interface GraphqlMoneyBag {
   shopMoney: { amount: string; currencyCode?: string };
 }
@@ -201,4 +217,13 @@ export async function fetchOrderById(shop: string, numericOrderId: number | stri
     'Shopify fetch order by id (refund re-sync)'
   );
   return data.order ? mapGraphqlOrder(data.order) : undefined;
+}
+
+// Best-effort by design — callers should treat a failure here as non-fatal
+// to onboarding (missing contact info is a worse outcome than a broken
+// install). Returns undefined rather than throwing on a missing/blank email
+// so callers don't need their own empty-string check.
+export async function fetchShopContactEmail(shop: string): Promise<string | undefined> {
+  const data = await shopifyGraphqlRequest<ShopQueryData>(shop, SHOP_QUERY, undefined, 'Shopify fetch shop contact email');
+  return data.shop.contactEmail || undefined;
 }

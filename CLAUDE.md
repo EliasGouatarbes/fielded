@@ -2213,3 +2213,101 @@ marketing suite or Stacksync's enterprise-scale sync.
     requires flipping `SHOPIFY_BILLING_TEST_MODE=false` in Render's
     environment once ready to actually charge merchants — defaults to
     `true` (safe) if never set.
+
+19. [DONE, BUILD-VERIFIED, NOT YET LIVE-TESTED, 2026-07-30] Two small
+    pre-launch fixes from user questions about what happens once real
+    merchants exist, both deliberately scoped down to "cheapest thing that
+    helps" rather than real infrastructure — explicit user call to go live
+    first and see if there are even any customers before building anything
+    heavier.
+    - **Merchant contact email, for future manual outreach.** The
+      underlying question: if a future update needs existing merchants to
+      reauthorize (e.g. a new required OAuth scope, same pattern as
+      `crm.objects.owners.read` in step 15), how would they ever be told,
+      given this app has zero email/Slack notification infrastructure
+      (10f)? Answer for now: it doesn't get automated — `billing_status`
+      already tells you *which* shops are paying customers, but nothing
+      captured *how to reach them*. Fixed minimally: new
+      `merchants.shop_contact_email` column (lazy `ALTER TABLE IF NOT
+      EXISTS`, same pattern as every other column added this way); right
+      after the Shopify OAuth token exchange
+      (`src/shopify/oauth.ts`), a new best-effort GraphQL call
+      (`fetchShopContactEmail`, `src/shopify/graphqlMapping.ts` — `shop {
+      contactEmail }`, no new scope needed) fetches the store's own
+      contact address and saves it via `saveShopifyContactEmail`
+      (`src/db/merchants.ts`). Wrapped in try/catch and never awaited into
+      a failure path that could break onboarding — if the fetch fails for
+      any reason, the merchant still connects normally, just without a
+      contact email on file; only a `console.warn`, nothing merchant-
+      facing. Stored as plaintext, not run through `src/crypto.ts` —
+      consistent with `shop_domain` itself already being plaintext in the
+      same table; this app's encryption bar is reserved for actual
+      access-granting secrets (OAuth tokens), not general account
+      metadata. This is *only* a data-retention move, not a notification
+      system — there's still no code anywhere that sends anything to this
+      address. The plan, per the user, is to query
+      `SELECT shop_domain, shop_contact_email FROM merchants WHERE
+      billing_status = 'ACTIVE'` and email affected merchants by hand from
+      the personal address set up in step 17, until/unless real customer
+      volume ever makes that not scale.
+      Privacy Policy updated to disclose this (Section 3's "what we hold
+      about the merchant's connection" list gained a bullet, and Section 4
+      gained a distinct legal basis — legitimate interest — for this one
+      field, kept separate from the "performance of contract" basis
+      covering everything else). Terms of Service and the DPA deliberately
+      **not** touched: the ToS only incorporates the Privacy Policy by
+      reference rather than itemizing data categories itself, and the DPA
+      is explicitly scoped to the merchant's own *customers'* data (its
+      own Section 3: "your own customers who place orders") where this app
+      is the Processor — a merchant's own business contact email is a
+      direct Fielded-merchant relationship (Fielded as its own controller
+      of that one field), which the Privacy Policy update already covers,
+      not something processed on the merchant's instructions.
+      **Known gaps, not fixed this pass**: the existing dev-store merchant
+      row won't have a contact email until it reconnects (this only fires
+      on the OAuth exchange going forward); and the `shop.contactEmail`
+      GraphQL field itself hasn't been live-verified against the real dev
+      store yet (would need an actual reconnect to trigger) — the
+      try/catch means a failure there is silent and harmless, but this is
+      flagged as unverified, not confirmed working, until that happens.
+    - **Backfill duplicate-deal risk, onboarding disclosure only.** The
+      underlying question: `upsertDealByName` (`src/hubspot/deals.ts`)
+      de-duplicates by an *exact* string match on `dealname` against
+      Shopify's `order.name` (e.g. `"#1001"`) — safe against
+      re-running this app's own sync, but not against a merchant who
+      already had orders synced into HubSpot Deals by HubSpot's own old
+      native Shopify integration or a different third-party app, if that
+      other tool's dealname format doesn't happen to match Shopify's raw
+      order name exactly. HubSpot enforces no uniqueness on dealname
+      server-side, so a mismatch there silently creates a second deal for
+      the same order, with nothing in this app today that detects or warns
+      about it. Contacts have no equivalent risk (`upsertContactByEmail`
+      is keyed on email, robust regardless of source).
+      Considered three options: (1) a plain onboarding disclosure, zero
+      engineering; (2) a pre-backfill scan that pauses and asks the
+      merchant to confirm before proceeding, a real fix but a real build
+      (new merchant state, a review UI); (3) fuzzy dealname matching to
+      widen detection, rejected outright as unsafe on its own (real
+      false-positive-match risk) — only useful as an input to option 2.
+      Explicit user choice: option 1 only, hold 2/3 until this is an
+      actual reported problem rather than a hypothetical one.
+      Added a `.muted` paragraph to the HubSpot-connected success page
+      (`src/hubspot/oauth.ts`) — the exact page shown at the moment
+      historical backfill kicks off in the background — explaining that
+      import matches by order number and can leave duplicate deals behind
+      if the merchant's prior sync used a different naming format, and
+      pointing them at support (the existing page-footer contact link, not
+      a repeated raw email address) rather than duplicating that address
+      inline. Deliberately doesn't pause or gate the backfill itself —
+      backfill already starts in the background before this page even
+      renders, so this is reactive (lets an affected merchant flag it so
+      duplicates can be cleaned up by hand), not preventive.
+    `npm run build` clean; all 81 tests pass unchanged (no new pure logic
+    — this is DB/OAuth-flow glue and static onboarding copy, consistent
+    with this project's established precedent of live-verifying that
+    category over unit testing it, e.g. 12a). Not yet live-tested against
+    the real dev store or deployed — both changes are additive/non-
+    blocking by construction (a failed contact-email fetch degrades
+    silently; the disclosure copy is inert text), so the risk of shipping
+    without a live pass first is low, but that verification is still
+    outstanding.

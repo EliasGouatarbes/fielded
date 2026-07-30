@@ -58,12 +58,16 @@ the merchant's <em>connection</em> to the service (not their customers):</p>
   <li>Their chosen HubSpot pipeline, stage, and routing preferences</li>
   <li>A one-way cryptographic hash of their dashboard access key &mdash; the key itself is shown to them once and is
   never stored in a form we can read back</li>
+  <li>Their store's contact email address, used only to reach the merchant directly about their account (e.g. a
+  required reconnection or a service issue) &mdash; never for marketing</li>
 </ul>
 
 <h2>4. Why we process this data</h2>
-<p>Solely to perform the service the merchant installed Fielded for: syncing their store's orders and customers into
-their HubSpot account, and letting them monitor and configure that sync. The legal basis is performance of our contract
-with the merchant (and, in turn, the merchant's own basis for processing their customers' data under their store's
+<p>Primarily to perform the service the merchant installed Fielded for: syncing their store's orders and customers into
+their HubSpot account, and letting them monitor and configure that sync. We also use the merchant's own contact email
+(Section 3) for operational communication about their account &mdash; the legal basis for that is our legitimate
+interest in being able to reach a merchant about their own service. The legal basis for the rest is performance of our
+contract with the merchant (and, in turn, the merchant's own basis for processing their customers' data under their store's
 terms and privacy policy).</p>
 
 <h2>5. Who else sees this data</h2>

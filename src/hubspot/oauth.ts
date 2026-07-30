@@ -263,6 +263,10 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async
         pipelines, lists, and reports keep working. Historical import can take a few minutes depending on how much
         order history this store has — check your <a href="${dashboardUrl}">dashboard</a> any time to see exactly
         when it's finished, or if anything went wrong.</p>
+        <p class="muted">Already had Shopify orders syncing into HubSpot Deals before connecting Fielded — from
+        HubSpot's own Shopify integration or a different app? Historical import matches by order number, so if that
+        older sync used a different naming format, it can leave duplicate deals behind. If that sounds like your
+        setup, get in touch (see the link at the bottom of this page) and we'll help clean anything up.</p>
         <a class="btn" href="${dashboardUrl}">View your dashboard &rarr;</a>
         ${saveLinkHtml}
         ${advancedHtml}`

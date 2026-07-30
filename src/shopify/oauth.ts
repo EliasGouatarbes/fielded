@@ -2,8 +2,9 @@ import { Router } from 'express';
 import '@shopify/shopify-api/adapters/node';
 import { shopifyApi, ApiVersion } from '@shopify/shopify-api';
 import { config } from '../config';
-import { getMerchant, saveShopifyToken } from '../db/merchants';
+import { getMerchant, saveShopifyToken, saveShopifyContactEmail } from '../db/merchants';
 import { normalizeShopDomain, exchangeShopifyToken } from './token';
+import { fetchShopContactEmail } from './graphqlMapping';
 import { createOAuthState, verifyOAuthState } from '../oauthState';
 import { renderPage, renderErrorPage } from '../htmlPage';
 import { oauthRateLimiter } from '../rateLimit';
@@ -116,6 +117,19 @@ shopifyOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async
       refreshToken: tokenResponse.refresh_token,
       expiresAt: tokenResponse.expires_in ? new Date(Date.now() + tokenResponse.expires_in * 1000) : undefined,
     });
+
+    // Best-effort: this app has no other way to reach a merchant directly
+    // (e.g. "please reconnect HubSpot after this update") without real
+    // notification infrastructure, which doesn't exist yet. A failure here
+    // must never break onboarding itself — caught and logged, not rethrown.
+    try {
+      const contactEmail = await fetchShopContactEmail(normalizeShopDomain(cleanShop));
+      if (contactEmail) {
+        await saveShopifyContactEmail(normalizeShopDomain(cleanShop), contactEmail);
+      }
+    } catch (err) {
+      console.warn(`Could not fetch shop contact email for ${cleanShop} (non-fatal):`, err);
+    }
 
     console.log('\n=== Shopify OAuth handshake complete ===');
     console.log(`Shop: ${cleanShop}`);
