@@ -21,6 +21,12 @@ const OAUTH_SCOPES = [
   'crm.objects.deals.write',
   'crm.objects.line_items.read',
   'crm.objects.line_items.write',
+  // Added for the dashboard's deal-rules editor (src/hubspot/options.ts):
+  // populating a real "assign to" owner dropdown means listing the
+  // portal's owners, which needs its own explicit scope — same pattern as
+  // line_items above. Every already-connected merchant must redo
+  // /auth/hubspot to pick this up (scopes are fixed at authorization time).
+  'crm.objects.owners.read',
 ].join(' ');
 
 export function hashAdminApiKey(key: string): string {

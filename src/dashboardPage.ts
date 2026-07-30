@@ -49,27 +49,22 @@ export function renderDashboardPage(): string {
 
   <section id="deal-rules-section">
     <h2>Deal routing rules</h2>
-    <p class="muted">First matching rule wins. Leave a field blank to match any value. Pipeline/stage/owner are
-    HubSpot's own internal identifiers, not display names — the same values the raw API already expects.</p>
+    <p class="muted">Route orders to a specific pipeline, stage, or owner based on their status. Rules are checked
+    top to bottom — the first one that matches an order wins. An order that matches nothing below uses your
+    default pipeline &amp; stage (shown under Connection status above).</p>
+    <div id="deal-rules-options-banner"></div>
     <div id="deal-rules-error"></div>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Financial status</th>
-            <th>Fulfillment status</th>
-            <th>Cancelled</th>
-            <th>Pipeline</th>
-            <th>Stage</th>
-            <th>Owner</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="deal-rules-body"></tbody>
-      </table>
+    <div id="deal-rules-list"></div>
+    <div id="deal-rules-empty" class="empty-state" hidden>
+      <p class="muted" style="margin: 0 0 0.75rem;">No custom rules yet — every order uses your default pipeline
+      &amp; stage. Add a rule to handle specific cases differently, e.g. routing refunded orders to a separate
+      pipeline.</p>
     </div>
-    <button type="button" id="add-rule-btn" class="btn-secondary">+ Add rule</button>
-    <button type="button" id="save-rules-btn" class="btn">Save rules</button>
+    <div class="rule-list-actions">
+      <button type="button" id="add-rule-btn" class="btn-secondary">+ Add a rule</button>
+      <button type="button" id="save-rules-btn" class="btn">Save rules</button>
+      <span id="deal-rules-status" class="save-confirmation" aria-live="polite"></span>
+    </div>
   </section>
 
   <section id="activity-section">
@@ -321,55 +316,137 @@ export function renderDashboardPage(): string {
 
   var rulesDraft = [];
   var dealRulesErrorEl = document.getElementById('deal-rules-error');
+  var dealRulesStatusEl = document.getElementById('deal-rules-status');
+  var dealRulesStatusTimer = null;
+
+  // Populated from GET /merchants/:shop/hubspot-options (loadDashboard,
+  // below). null means "couldn't load" (missing scope, HubSpot down, etc.)
+  // — the pipeline/stage/owner fields fall back to plain text entry in that
+  // case rather than blocking the whole editor. Financial/fulfillment
+  // status don't depend on this: they're a fixed, known Shopify vocabulary.
+  var hubspotOptions = { pipelines: null, owners: null };
+
+  var FINANCIAL_STATUS_OPTIONS = [
+    { value: 'pending', label: 'Pending' },
+    { value: 'authorized', label: 'Authorized' },
+    { value: 'partially_paid', label: 'Partially paid' },
+    { value: 'paid', label: 'Paid' },
+    { value: 'partially_refunded', label: 'Partially refunded' },
+    { value: 'refunded', label: 'Refunded' },
+    { value: 'voided', label: 'Voided' }
+  ];
+  var FULFILLMENT_STATUS_OPTIONS = [
+    { value: 'unfulfilled', label: 'Unfulfilled' },
+    { value: 'partial', label: 'Partially fulfilled' },
+    { value: 'fulfilled', label: 'Fulfilled' },
+    { value: 'restocked', label: 'Restocked' }
+  ];
+  var CANCELLED_OPTIONS = [
+    { value: 'true', label: 'Cancelled orders only' },
+    { value: 'false', label: 'Not cancelled' }
+  ];
 
   function blankRule() {
     return { financial_status: '', fulfillment_status: '', cancelled: '', pipeline: '', stage: '', owner: '' };
   }
 
-  function textCell(value, onInput) {
-    var td = document.createElement('td');
-    var input = document.createElement('input');
-    input.type = 'text';
-    input.style.marginBottom = '0';
-    input.value = value || '';
-    input.addEventListener('input', function () {
-      onInput(input.value);
+  function pipelineById(id) {
+    return (hubspotOptions.pipelines || []).filter(function (p) { return p.id === id; })[0];
+  }
+
+  // One labeled field: a select when "options" is a real (non-null) list,
+  // otherwise a plain text input carrying the raw value through unchanged —
+  // this is what lets the editor still work (just less conveniently) before
+  // a merchant has reconnected HubSpot for the scope live options need.
+  function selectOrTextField(labelText, value, options, onChange, opts) {
+    opts = opts || {};
+    var wrap = document.createElement('div');
+    wrap.className = 'rule-field';
+    var label = document.createElement('label');
+    label.textContent = labelText;
+    wrap.appendChild(label);
+
+    if (!options) {
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.style.marginBottom = '0';
+      input.placeholder = opts.placeholder || '';
+      input.value = value || '';
+      input.addEventListener('input', function () { onChange(input.value); });
+      wrap.appendChild(input);
+      return wrap;
+    }
+
+    var select = document.createElement('select');
+    select.style.marginBottom = '0';
+    var placeholderOpt = document.createElement('option');
+    placeholderOpt.value = '';
+    placeholderOpt.textContent = opts.anyLabel || 'Any';
+    select.appendChild(placeholderOpt);
+
+    var found = false;
+    options.forEach(function (opt) {
+      var o = document.createElement('option');
+      o.value = opt.value;
+      o.textContent = opt.label;
+      if (opt.value === value) { o.selected = true; found = true; }
+      select.appendChild(o);
     });
-    td.appendChild(input);
-    return td;
+    // A value that exists in saved data but not in the current options list
+    // (e.g. an archived HubSpot pipeline, or an id typed by hand before this
+    // page had dropdowns) — keep it visible and selected rather than
+    // silently discarding it the moment this renders.
+    if (value && !found) {
+      var unknownOpt = document.createElement('option');
+      unknownOpt.value = value;
+      unknownOpt.textContent = value + ' (not in current list)';
+      unknownOpt.selected = true;
+      select.appendChild(unknownOpt);
+    }
+
+    select.addEventListener('change', function () { onChange(select.value); });
+    wrap.appendChild(select);
+    return wrap;
+  }
+
+  function ruleRow(rowLabel, fields) {
+    var row = document.createElement('div');
+    row.className = 'rule-row';
+    var label = document.createElement('span');
+    label.className = 'rule-row-label';
+    label.textContent = rowLabel;
+    row.appendChild(label);
+    var fieldsWrap = document.createElement('div');
+    fieldsWrap.className = 'rule-fields';
+    fields.forEach(function (f) { fieldsWrap.appendChild(f); });
+    row.appendChild(fieldsWrap);
+    return row;
   }
 
   function renderDealRules() {
-    var body = document.getElementById('deal-rules-body');
-    clearChildren(body);
+    var list = document.getElementById('deal-rules-list');
+    var empty = document.getElementById('deal-rules-empty');
+    clearChildren(list);
+    empty.hidden = rulesDraft.length > 0;
 
     rulesDraft.forEach(function (rule, index) {
-      var row = document.createElement('tr');
+      var card = document.createElement('div');
+      card.className = 'rule-card';
 
-      row.appendChild(textCell(rule.financial_status, function (v) { rule.financial_status = v; }));
-      row.appendChild(textCell(rule.fulfillment_status, function (v) { rule.fulfillment_status = v; }));
+      var header = document.createElement('div');
+      header.className = 'rule-card-header';
+      var numberBadge = document.createElement('span');
+      numberBadge.className = 'rule-number-badge';
+      numberBadge.textContent = String(index + 1);
+      header.appendChild(numberBadge);
 
-      var cancelledTd = document.createElement('td');
-      var select = document.createElement('select');
-      [['', 'any'], ['true', 'true'], ['false', 'false']].forEach(function (opt) {
-        var option = document.createElement('option');
-        option.value = opt[0];
-        option.textContent = opt[1];
-        if (rule.cancelled === opt[0]) option.selected = true;
-        select.appendChild(option);
-      });
-      select.addEventListener('change', function () { rule.cancelled = select.value; });
-      cancelledTd.appendChild(select);
-      row.appendChild(cancelledTd);
-
-      row.appendChild(textCell(rule.pipeline, function (v) { rule.pipeline = v; }));
-      row.appendChild(textCell(rule.stage, function (v) { rule.stage = v; }));
-      row.appendChild(textCell(rule.owner, function (v) { rule.owner = v; }));
-
-      var actionsTd = document.createElement('td');
+      var actions = document.createElement('div');
+      actions.className = 'rule-card-actions';
       var upBtn = document.createElement('button');
       upBtn.type = 'button';
-      upBtn.className = 'btn-secondary';
+      upBtn.className = 'icon-btn';
+      upBtn.title = 'Move rule up';
+      upBtn.setAttribute('aria-label', 'Move rule up');
       upBtn.textContent = '\\u2191';
       upBtn.disabled = index === 0;
       upBtn.addEventListener('click', function () {
@@ -380,7 +457,9 @@ export function renderDashboardPage(): string {
       });
       var downBtn = document.createElement('button');
       downBtn.type = 'button';
-      downBtn.className = 'btn-secondary';
+      downBtn.className = 'icon-btn';
+      downBtn.title = 'Move rule down';
+      downBtn.setAttribute('aria-label', 'Move rule down');
       downBtn.textContent = '\\u2193';
       downBtn.disabled = index === rulesDraft.length - 1;
       downBtn.addEventListener('click', function () {
@@ -391,18 +470,87 @@ export function renderDashboardPage(): string {
       });
       var removeBtn = document.createElement('button');
       removeBtn.type = 'button';
-      removeBtn.className = 'btn-secondary';
+      removeBtn.className = 'icon-btn icon-btn-danger';
+      removeBtn.title = 'Remove rule';
+      removeBtn.setAttribute('aria-label', 'Remove rule');
       removeBtn.textContent = '\\u2715';
       removeBtn.addEventListener('click', function () {
         rulesDraft.splice(index, 1);
         renderDealRules();
       });
-      actionsTd.appendChild(upBtn);
-      actionsTd.appendChild(downBtn);
-      actionsTd.appendChild(removeBtn);
-      row.appendChild(actionsTd);
+      actions.appendChild(upBtn);
+      actions.appendChild(downBtn);
+      actions.appendChild(removeBtn);
+      header.appendChild(actions);
+      card.appendChild(header);
 
-      body.appendChild(row);
+      card.appendChild(ruleRow('If order has', [
+        selectOrTextField('Payment status', rule.financial_status, FINANCIAL_STATUS_OPTIONS, function (v) { rule.financial_status = v; }),
+        selectOrTextField('Fulfillment status', rule.fulfillment_status, FULFILLMENT_STATUS_OPTIONS, function (v) { rule.fulfillment_status = v; }),
+        selectOrTextField('Cancelled', rule.cancelled, CANCELLED_OPTIONS, function (v) { rule.cancelled = v; })
+      ]));
+
+      var pipelineOptions = hubspotOptions.pipelines
+        ? hubspotOptions.pipelines.map(function (p) { return { value: p.id, label: p.label }; })
+        : null;
+      var currentPipeline = hubspotOptions.pipelines ? pipelineById(rule.pipeline) : null;
+      var stageOptions = hubspotOptions.pipelines
+        ? (currentPipeline ? currentPipeline.stages.map(function (s) { return { value: s.id, label: s.label }; } ) : [])
+        : null;
+      var ownerOptions = hubspotOptions.owners
+        ? hubspotOptions.owners.map(function (o) { return { value: o.id, label: o.label }; })
+        : null;
+
+      card.appendChild(ruleRow('Then route to', [
+        selectOrTextField('Pipeline', rule.pipeline, pipelineOptions, function (v) {
+          rule.pipeline = v;
+          // A pipeline's stages are specific to it — a stage id that made
+          // sense under the old pipeline almost never exists under the new
+          // one, so don't carry it forward silently.
+          if (hubspotOptions.pipelines) rule.stage = '';
+          renderDealRules();
+        }, { placeholder: 'HubSpot pipeline id', anyLabel: 'Choose a pipeline\\u2026' }),
+        selectOrTextField('Stage', rule.stage, stageOptions, function (v) { rule.stage = v; },
+          { placeholder: 'HubSpot stage id', anyLabel: currentPipeline ? 'Choose a stage\\u2026' : 'Choose a pipeline first' }),
+        selectOrTextField('Owner (optional)', rule.owner, ownerOptions, function (v) { rule.owner = v; },
+          { placeholder: 'HubSpot owner id', anyLabel: 'Unassigned' })
+      ]));
+
+      list.appendChild(card);
+    });
+  }
+
+  function loadHubSpotOptions() {
+    return authedFetch('/merchants/' + shop + '/hubspot-options').then(function (data) {
+      hubspotOptions.pipelines = data.pipelines;
+      hubspotOptions.owners = data.owners;
+
+      var banner = document.getElementById('deal-rules-options-banner');
+      clearChildren(banner);
+      if (data.pipelinesError || data.ownersError) {
+        var box = document.createElement('div');
+        box.className = 'banner-info';
+        var strong = document.createElement('strong');
+        strong.textContent = "Pipeline/stage/owner dropdowns aren't available right now.";
+        box.appendChild(strong);
+        var detail = document.createElement('p');
+        detail.style.margin = '0.4rem 0 0';
+        detail.textContent = (data.pipelinesError || data.ownersError) +
+          ' You can still enter HubSpot\\'s internal ids directly below, or reconnect HubSpot to enable the dropdowns.';
+        box.appendChild(detail);
+        var link = document.createElement('a');
+        link.href = '/auth/hubspot?shop=' + encodeURIComponent(shop);
+        link.textContent = 'Reconnect HubSpot \\u2192';
+        link.style.display = 'inline-block';
+        link.style.marginTop = '0.5rem';
+        box.appendChild(link);
+        banner.appendChild(box);
+      }
+    }).catch(function () {
+      // Non-fatal: the rest of the dashboard still works, just with plain
+      // text entry for these three fields (handled by selectOrTextField's
+      // null-options fallback, since hubspotOptions stays at its initial
+      // {pipelines: null, owners: null}).
     });
   }
 
@@ -411,8 +559,26 @@ export function renderDashboardPage(): string {
     renderDealRules();
   });
 
+  function showDealRulesSaved() {
+    if (dealRulesStatusTimer) clearTimeout(dealRulesStatusTimer);
+    dealRulesStatusEl.textContent = '\\u2713 Saved';
+    dealRulesStatusTimer = setTimeout(function () { dealRulesStatusEl.textContent = ''; }, 3000);
+  }
+
   document.getElementById('save-rules-btn').addEventListener('click', function () {
     clearChildren(dealRulesErrorEl);
+    dealRulesStatusEl.textContent = '';
+
+    for (var i = 0; i < rulesDraft.length; i++) {
+      if (!rulesDraft[i].pipeline || !rulesDraft[i].stage) {
+        var p = document.createElement('p');
+        p.className = 'error';
+        p.textContent = 'Rule ' + (i + 1) + ': pipeline and stage are both required.';
+        dealRulesErrorEl.appendChild(p);
+        return;
+      }
+    }
+
     var payload = rulesDraft.map(function (rule) {
       var when = {};
       if (rule.financial_status) when.financial_status = rule.financial_status;
@@ -437,6 +603,7 @@ export function renderDashboardPage(): string {
           };
         });
         renderDealRules();
+        showDealRulesSaved();
       })
       .catch(function (err) {
         if (err.message === 'unauthorized') return;
@@ -527,7 +694,8 @@ export function renderDashboardPage(): string {
     return Promise.all([
       authedFetch('/merchants/' + shop + '/status'),
       authedFetch('/merchants/' + shop + '/deal-rules'),
-      authedFetch('/sync-status?shop=' + encodeURIComponent(shop) + '&limit=25')
+      authedFetch('/sync-status?shop=' + encodeURIComponent(shop) + '&limit=25'),
+      loadHubSpotOptions()
     ]).then(function (results) {
       showDashboard();
       renderStatus(results[0]);

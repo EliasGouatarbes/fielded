@@ -1732,9 +1732,179 @@ marketing suite or Stacksync's enterprise-scale sync.
     production URLs, which is reasonable evidence but not proof the deploy
     was accepted; that state lives on Shopify's side, not verifiable from
     local files.
+    **[RESOLVED, 2026-07-30]** Two config files exist at the wrapping-folder
+    level — `shopify.app.testapp.toml` (`client_id: e8a932a8...`, name
+    "testAPP") and `shopify.app.testhubspot.toml` (`client_id: cbedd873...`)
+    — the latter belongs to an unrelated app ("Oma Kauppa"), not this
+    project; confirmed `testapp` is the real one by cross-checking its
+    `client_id` against `.env`'s `SHOPIFY_API_KEY`/`SHOPIFY_API_SECRET_KEY`
+    (the values the running server actually authenticates OAuth and
+    verifies webhook HMACs with) — exact match. `.shopify/project.json`'s
+    only entry being keyed under `testhubspot`'s client_id was a red
+    herring, not evidence of a misconfigured deploy. User ran
+    `shopify app deploy` against the `testapp` config to confirm; compliance
+    webhook URLs are now confirmed live on the correct app in the Partner
+    Dashboard.
     `npm run build` clean; 77 tests pass (72 prior + 5 new: 2 for
     `findStaleSubscription`, 3 for `sanitizeErrorMessage`). Every live test
     this pass ran against the real dev store/shared Supabase database (no
     separate staging environment exists) — all created test
     contacts/deals/records archived afterward, confirmed the one real
     merchant row and its data were untouched throughout.
+    - **14f. [DONE, VERIFIED, 2026-07-29]** Dead ends for a merchant who
+      loses the onboarding success page. Not embedded in Shopify Admin, no
+      email delivery of the dashboard link, and both the bare app URL and
+      a bare `/dashboard` with no `?shop=` led nowhere useful (the former a
+      raw, unbranded Express "Cannot GET /" crash). Fixed: the
+      HubSpot-connected success page's dashboard link is now its own
+      always-shown "save this now" callout with the full copyable URL, no
+      longer buried under "optional, for later" framing
+      (`src/hubspot/oauth.ts`); `GET /` now renders a branded page
+      explaining what the app is and pointing merchants back to their
+      saved dashboard link instead of crashing (`src/server.ts`);
+      `src/dashboardPage.ts` clarified its own missing-`?shop=` messaging.
+      Deliberately not building a self-service recovery flow (e.g. asking
+      for their shop domain to look up the link) — just making the
+      failure states honest and branded rather than silent dead ends. 77
+      tests pass (unchanged, pure markup); clean build.
+    - **14g. [DONE, VERIFIED, 2026-07-29]** Unescaped `&` in the
+      onboarding success page mangled the copyable regenerate-key URL.
+      Caught by actually rendering and screenshotting the page rather than
+      just reading the template: a bare `&` before `regenerate_key=1` gets
+      parsed by browsers as the legacy HTML entity `&reg` (recognized
+      without a trailing semicolon), silently turning the visible recovery
+      URL into `...myshopify.com®enerate_key=1` — a link a merchant could
+      easily copy-paste broken. Pre-existing bug, unrelated to 14f's
+      changes to the same file. Fixed with `&amp;` in `src/hubspot/oauth.ts`.
+
+15. [DONE, VERIFIED, 2026-07-30] Dashboard redesign, at explicit user
+    request ("it looks clunky and feels clunky... not clear. Fix at least
+    the customization area"). Scoped with the user upfront: a pure visual
+    pass on the deal-rules editor (12a) vs. also wiring real HubSpot
+    pipeline/stage/owner dropdowns instead of raw-id text entry — user
+    chose the latter, since blind internal-id entry was judged the actual
+    root cause of "not clear," not just the layout.
+    - Deal-rules editor (`src/dashboardPage.ts`) rebuilt from a cramped
+      6-column/1-row table into one bordered "rule card" per rule: a
+      numbered badge, labeled "If order has" / "Then route to" rows, and
+      clearer icon-button actions (move up/down/remove, each with a real
+      `title`/`aria-label`) instead of unlabeled table-cell buttons.
+      Financial/fulfillment status and "cancelled" became real `<select>`s
+      with plain-English labels ("Partially refunded", "Cancelled orders
+      only") over an editor that previously only accepted hand-typed raw
+      strings with no hint of the valid vocabulary.
+    - Pipeline/stage/owner are now real dropdowns too, populated live from
+      HubSpot: new `src/hubspot/options.ts` (`fetchDealPipelineOptions` via
+      `crm.pipelines.pipelinesApi.getAll('deals')`, `fetchOwnerOptions` via
+      paginated `crm.owners.ownersApi.getPage`) and a new
+      `GET /merchants/:shop/hubspot-options` route (`src/server.ts`,
+      same auth/rate-limit stack as the rest of the dashboard's endpoints).
+      Stage options are derived from whichever pipeline is currently
+      selected on that rule (re-rendered on pipeline change, resetting the
+      stage since a stage id from one pipeline essentially never applies to
+      another). A value already saved but not present in the live list
+      (an archived pipeline, or a raw id typed by hand before this pass)
+      is kept visible and selected via a synthetic "(not in current list)"
+      option rather than silently dropped.
+      New scope required: `crm.objects.owners.read` (added to
+      `OAUTH_SCOPES`, `src/hubspot/oauth.ts`) — confirmed live against the
+      real dev store's portal that pipelines already worked under the
+      *existing* deals scopes (no new scope needed there) but owners
+      genuinely 403s (`MISSING_SCOPES`, naming `crm.objects.owners.read`)
+      until reconnected, matching this project's established "verify
+      empirically, not from docs" precedent for HubSpot scopes (9b's line-
+      items scope hit the same pattern).
+      Graceful degradation, not a hard dependency: pipelines/owners are
+      fetched independently (`Promise.allSettled`) so one failing doesn't
+      block the other, and any field without live options falls back to
+      its old plain-text input rather than the editor breaking — confirmed
+      live pre-reconnect (owners 403, pipelines succeed): pipeline/stage
+      rendered as real dropdowns with actual portal data ("Sales
+      Pipeline" / "Closed Won"), owner still a text input, with a
+      `.banner-info` box explaining why plus a direct "Reconnect HubSpot
+      →" link.
+      **Real bug caught only by looking at the live response, not by
+      reading the code**: the fallback banner's message was, at first, a
+      raw dump of HubSpot's `ApiException` — the same "Headers:" leak class
+      already fixed once for `sync_log`/`/sync-status` (14d), reintroduced
+      here because this is a new call site `sanitizeErrorMessage` wasn't
+      wired into. Fixed with a purpose-built `describeOptionsFetchError`
+      (`src/hubspot/options.ts`): a clean, plain-English message for the
+      one failure mode expected to actually happen (a missing-scope 403,
+      detected via `err.code === 403 && err.body.category ===
+      'MISSING_SCOPES'`, not string-matching), falling back to the same
+      header-stripped/length-capped text as everywhere else for anything
+      unexpected. New `src/hubspot/options.test.ts` (4 tests: the friendly
+      path, the sanitized-fallback path, that a non-403 with a
+      superficially similar body isn't misclassified, non-Error input).
+      Re-verified live after the fix: the banner now reads "Reconnect
+      HubSpot to enable the owner list — this app's permissions were
+      updated since you last connected." with no technical dump.
+    - Save now gives feedback: a "✓ Saved" confirmation next to the Save
+      button (auto-clears after 3s) — previously a successful save was
+      visually indistinguishable from doing nothing. Also added a
+      pipeline/stage-required client-side check before the request even
+      fires (matching the server's own existing validation in
+      `hubspot/dealRules.ts`, just surfaced earlier).
+    - Empty state: an explicit dashed-border message ("No custom rules
+      yet... Add a rule to handle specific cases differently, e.g. routing
+      refunded orders to a separate pipeline") instead of a bare empty
+      table, plus rewritten intro copy explaining "first rule that matches
+      wins" and pointing at the default pipeline/stage shown in Connection
+      status above, closing a real disconnect between the two sections.
+    - **Real pre-existing bug fixed as a side effect of building the
+      dropdowns, not scope creep** — needed for the new fulfillment-status
+      dropdown to actually work: Shopify's REST/webhook payloads represent
+      "not yet fulfilled" as `fulfillment_status: null`, but
+      `DealRuleCondition.fulfillment_status` (`hubspot/dealRules.ts`) is
+      always a string, so no rule could ever have matched an unfulfilled
+      order — the condition literally couldn't express it. Fixed by
+      normalizing `null` to the literal string `'unfulfilled'` right where
+      `sync.ts` builds the order-conditions object passed to
+      `evaluateDealRules`. **Deliberately not fixed, flagged instead**: this
+      only closes the gap for the webhook path. The GraphQL backfill path
+      (`shopify/graphqlMapping.ts`) sources the same concept from Shopify's
+      `displayFulfillmentStatus` enum, which is both differently-cased
+      (`UNFULFILLED` vs `unfulfilled`) and a *wider* vocabulary (e.g.
+      `IN_PROGRESS`, `ON_HOLD`, `PENDING_FULFILLMENT` have no REST
+      equivalent) — collapsing that into this app's 4-value REST-shaped
+      vocabulary is a real, separate fix (already flagged once, step 11)
+      that needs its own deliberate mapping decision, not a one-line
+      normalization.
+      Also flagged, not fixed this pass: `webhooksError` on the existing
+      `GET /merchants/:shop/status` route (12a) returns a raw
+      `err.message` the same way `hubspot-options` did before this fix —
+      same leak class, pre-existing, outside what was asked.
+    - CSS (`src/htmlPage.ts`): new `.rule-card`/`.rule-card-header`/
+      `.rule-number-badge`/`.icon-btn`/`.rule-row`/`.rule-fields`/
+      `.empty-state`/`.banner-info`/`.save-confirmation`, light + dark
+      variants, reusing the existing card/badge/button visual language
+      rather than introducing a new style.
+    `npm run build` clean; 81 tests pass (77 prior + 4 new, all in
+    `options.test.ts` — the new dashboard interactivity itself follows this
+    project's established precedent of live-verification over unit tests
+    for client-side JS/route glue, e.g. 12a).
+    Live-verified against the real dev store end to end, including the
+    parts that can't be inferred from reading the code: curled
+    `/merchants/:shop/hubspot-options` directly before and after the
+    `describeOptionsFetchError` fix to confirm the raw-dump leak and then
+    its fix; used Playwright (installed via `npm install --no-save`,
+    removed afterward — confirmed `package.json`/lockfile untouched) driving
+    the system's installed Chrome to screenshot the empty state, a filled
+    rule card with real "Sales Pipeline"/"Closed Won" values selected from
+    the live dropdown, and the post-save "✓ Saved" confirmation, in both
+    light and dark; confirmed the pipeline→stage dependent-dropdown
+    behavior with real portal data (7 real stage names); did a full
+    save → reload → verify-persisted round trip (`financial_status:
+    'refunded'` survived a hard reload reading from the live DB, not just
+    in-memory state) then explicitly reverted the dev store's rules back to
+    `[]`, confirming via a direct API call afterward that its real
+    deal-rules state was left exactly as found.
+    **Still needed, external to this repo, before the owner dropdown
+    actually works live**: `crm.objects.owners.read` must be added to this
+    HubSpot app's `requiredScopes` (the CLI-managed `app-hsmeta.json` this
+    repo doesn't contain, per 9b's precedent) and `hs project upload` run,
+    then every already-connected merchant (currently just the dev store)
+    must redo `/auth/hubspot` to pick up the new scope. Until then the
+    dashboard degrades gracefully exactly as verified above — this isn't a
+    launch blocker, just an incomplete feature.

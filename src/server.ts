@@ -15,6 +15,7 @@ import { renderPage } from './htmlPage';
 import { TRUST_PROXY_HOPS, apiRateLimiter } from './rateLimit';
 import { backfillMerchant } from './backfillMerchant';
 import { resolveMerchantContext } from './hubspot/tokens';
+import { fetchDealPipelineOptions, fetchOwnerOptions, describeOptionsFetchError } from './hubspot/options';
 
 const app = express();
 // Required for express-rate-limit (and any other X-Forwarded-For-based
@@ -231,6 +232,49 @@ app.get('/merchants/:shop/status', apiRateLimiter, requireAdminOrMerchantAuth, a
     webhooks,
     webhooksError,
     backfillStatus: merchant.backfillStatus,
+  });
+});
+
+// Feeds the dashboard's deal-rules editor real pipeline/stage/owner names
+// instead of asking a merchant to type HubSpot's raw internal ids from
+// memory. Pipelines and owners are fetched independently (Promise.allSettled)
+// so, e.g., a merchant who hasn't yet reconnected for the newer
+// crm.objects.owners.read scope still gets a working pipeline/stage picker
+// — the dashboard falls back to plain text entry per-field, not all-or-
+// nothing. Each error message is returned as-is (HubSpot's own
+// MISSING_SCOPES errors already name the exact missing scope, per this
+// project's established precedent for diagnosing scope gaps) rather than
+// generalized, so a merchant/operator reading it knows exactly what to fix.
+app.get('/merchants/:shop/hubspot-options', apiRateLimiter, requireAdminOrMerchantAuth, async (req, res) => {
+  const shopDomain = normalizeShopDomain(req.params.shop);
+  const ctx = await resolveMerchantContext(shopDomain);
+  if (!ctx) {
+    res.status(404).send('Unknown merchant.');
+    return;
+  }
+
+  const [pipelinesResult, ownersResult] = await Promise.allSettled([
+    fetchDealPipelineOptions(ctx.hubspotClient),
+    fetchOwnerOptions(ctx.hubspotClient),
+  ]);
+
+  if (pipelinesResult.status === 'rejected') console.error(`Failed to fetch HubSpot pipelines for ${shopDomain}:`, pipelinesResult.reason);
+  if (ownersResult.status === 'rejected') console.error(`Failed to fetch HubSpot owners for ${shopDomain}:`, ownersResult.reason);
+
+  // describeOptionsFetchError turns HubSpot's raw ApiException dump into
+  // plain English for the common case (a missing-scope 403) and otherwise
+  // falls back to the same header-stripped text sync_log already uses
+  // (14d) — confirmed live against the real dev store's actual 403 before
+  // its owners scope was granted (see src/hubspot/options.ts).
+  res.json({
+    pipelines: pipelinesResult.status === 'fulfilled' ? pipelinesResult.value : null,
+    pipelinesError: pipelinesResult.status === 'rejected'
+      ? describeOptionsFetchError(pipelinesResult.reason, 'pipeline/stage names')
+      : undefined,
+    owners: ownersResult.status === 'fulfilled' ? ownersResult.value : null,
+    ownersError: ownersResult.status === 'rejected'
+      ? describeOptionsFetchError(ownersResult.reason, 'the owner list')
+      : undefined,
   });
 });
 

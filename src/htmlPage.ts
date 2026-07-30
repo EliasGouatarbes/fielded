@@ -129,6 +129,69 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
   .badge-ok { background: #e3f5e9; color: #1c6b3a; }
   .badge-bad { background: #fdecea; color: #7a2018; }
   .badge-neutral { background: #f0f1f3; color: #555; }
+  /* Deal-rules editor (src/dashboardPage.ts) — one bordered card per rule
+     instead of a cramped multi-column table, so each rule reads as a
+     single "if this, then that" statement rather than six unlabeled cells
+     a merchant has to cross-reference against a header row above. */
+  .rule-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+    margin-bottom: 0.85rem;
+    background: #fafafa;
+  }
+  .rule-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+  .rule-number-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 999px;
+    background: #ff5c35;
+    color: #fff;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+  .rule-card-actions { display: flex; gap: 0.4rem; }
+  .icon-btn {
+    background: transparent;
+    border: 1px solid #d5d8dd;
+    border-radius: 6px;
+    width: 2rem;
+    height: 2rem;
+    line-height: 1;
+    cursor: pointer;
+    color: #1a1a1a;
+    font-size: 0.95rem;
+  }
+  .icon-btn:disabled { opacity: 0.35; cursor: default; }
+  .icon-btn-danger:hover:not(:disabled) { background: #fdecea; border-color: #f3a9a0; color: #7a2018; }
+  .rule-row { margin-bottom: 0.75rem; }
+  .rule-row:last-child { margin-bottom: 0; }
+  .rule-row-label {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #888;
+    margin-bottom: 0.4rem;
+  }
+  .rule-fields { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+  .rule-field { flex: 1 1 160px; min-width: 140px; }
+  .rule-field label { font-size: 0.78rem; font-weight: 500; color: #555; margin-bottom: 0.2rem; }
+  .rule-field select, .rule-field input { margin-bottom: 0; }
+  .rule-list-actions { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem; flex-wrap: wrap; }
+  .save-confirmation { color: #1c6b3a; font-size: 0.88rem; font-weight: 600; }
+  .empty-state {
+    border: 1px dashed #d5d8dd;
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+    margin-bottom: 0.85rem;
+  }
+  .banner-info { background: #eaf2fe; border: 1px solid #b9d3fb; border-radius: 8px; padding: 0.75rem 1rem; color: #1a3d7c; margin-bottom: 1rem; }
+  .banner-info a { color: inherit; font-weight: 600; }
   @media (prefers-color-scheme: dark) {
     body { background: #0f1115; color: #e6e6e6; }
     .card { background: #1a1d23; box-shadow: none; border: 1px solid #2a2e37; }
@@ -145,6 +208,14 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
     .badge-ok { background: #123420; color: #6fd897; }
     .badge-bad { background: #3a1512; color: #ffb4a8; }
     .badge-neutral { background: #24272e; color: #9aa0a6; }
+    .rule-card { background: #21242b; border-color: #2a2e37; }
+    .icon-btn { border-color: #3a3f4a; color: #e6e6e6; }
+    .icon-btn-danger:hover:not(:disabled) { background: #3a1512; border-color: #6b2a20; color: #ffb4a8; }
+    .rule-row-label { color: #9aa0a6; }
+    .rule-field label { color: #9aa0a6; }
+    .save-confirmation { color: #6fd897; }
+    .empty-state { border-color: #3a3f4a; }
+    .banner-info { background: #16233d; border-color: #2c4b86; color: #bcd4fb; }
   }
 </style>
 </head>

@@ -130,7 +130,18 @@ export async function syncOrder(order: ShopifyOrder, merchant: MerchantContext):
       merchant.dealRules,
       {
         financial_status: order.financial_status,
-        fulfillment_status: order.fulfillment_status,
+        // Shopify's REST/webhook payloads represent "no fulfillment yet" as
+        // `null`, not a string — which a `when.fulfillment_status` rule
+        // condition (always a string, see hubspot/dealRules.ts) could never
+        // match. Normalized to the literal string 'unfulfilled' so the
+        // dashboard's rule editor can offer it as a real, working option.
+        // Note this only covers the webhook path: the GraphQL backfill path
+        // (src/shopify/graphqlMapping.ts) sources this from Shopify's
+        // `displayFulfillmentStatus` enum, which is both differently-cased
+        // and a wider vocabulary (e.g. IN_PROGRESS, ON_HOLD) than this
+        // REST-shaped value — a pre-existing gap (flagged in CLAUDE.md step
+        // 11) this fix doesn't close.
+        fulfillment_status: order.fulfillment_status ?? 'unfulfilled',
         cancelled: Boolean(order.cancelled_at),
       },
       merchant.dealPipeline,
