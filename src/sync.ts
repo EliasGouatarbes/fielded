@@ -56,12 +56,13 @@ export interface ShopifyOrder {
   // default gets a silently wrong-looking Deal amount.
   currency?: string | null;
   customer?: ShopifyCustomer | null;
-  // The name typed into checkout's Delivery/Payment steps for *this specific
-  // order* — distinct from `customer.first_name`/`last_name`, which is the
-  // linked Shopify Customer profile's name and, for a returning email,
-  // doesn't change just because a later order's checkout form was filled in
-  // differently (Shopify keeps the original profile name). syncOrder below
-  // prefers these over the customer profile's name for exactly that reason.
+  // The name and address typed into checkout's Delivery/Payment steps for
+  // *this specific order* — distinct from `customer.first_name`/`last_name`/
+  // `default_address`, which is the linked Shopify Customer profile's own
+  // stored details and, for a returning email, doesn't change just because
+  // a later order's checkout form was filled in differently (Shopify keeps
+  // the original profile info). syncOrder below prefers these over the
+  // customer profile's details for exactly that reason.
   billing_address?: ShopifyAddress | null;
   shipping_address?: ShopifyAddress | null;
   financial_status?: string | null;
@@ -72,20 +73,33 @@ export interface ShopifyOrder {
   line_items?: ShopifyLineItem[] | null;
 }
 
-// Prefers the name actually entered on this order's checkout (billing, then
-// shipping) over the linked Shopify Customer profile's name — a repeat
-// email keeps its original Customer profile name regardless of what's typed
-// at checkout on a later order, which is surprising when that later order's
-// name is the one a merchant actually expects to see synced. Pure/exported
-// so this precedence is independently testable without a live order.
-export function resolveOrderContactName(order: ShopifyOrder): { first_name?: string | null; last_name?: string | null } {
-  const candidates = [order.billing_address, order.shipping_address];
-  for (const address of candidates) {
-    if (address?.first_name || address?.last_name) {
-      return { first_name: address.first_name, last_name: address.last_name };
-    }
+// Prefers the name and address actually entered on this order's checkout
+// (billing, then shipping) over the linked Shopify Customer profile's own
+// stored details — a repeat email keeps its original Customer profile info
+// regardless of what's typed at checkout on a later order, which is
+// surprising when that later order's info is what a merchant actually
+// expects to see synced (both the name and, e.g., a different shipping
+// address for a gift order). Pure/exported so this precedence is
+// independently testable without a live order.
+export function resolveOrderContact(order: ShopifyOrder): Pick<ShopifyCustomer, 'first_name' | 'last_name' | 'default_address'> {
+  const address = [order.billing_address, order.shipping_address].find(
+    (candidate) =>
+      candidate?.first_name || candidate?.last_name || candidate?.address1 || candidate?.city || candidate?.zip || candidate?.country
+  );
+  if (!address) {
+    return { first_name: order.customer?.first_name, last_name: order.customer?.last_name };
   }
-  return { first_name: order.customer?.first_name, last_name: order.customer?.last_name };
+  return {
+    first_name: address.first_name ?? order.customer?.first_name,
+    last_name: address.last_name ?? order.customer?.last_name,
+    default_address: {
+      address1: address.address1,
+      city: address.city,
+      province: address.province,
+      zip: address.zip,
+      country: address.country,
+    },
+  };
 }
 
 // `lifecycleStage` is only ever passed by syncOrder below — a plain
@@ -186,7 +200,7 @@ export async function syncOrder(order: ShopifyOrder, merchant: MerchantContext):
 
   try {
     const contactId = order.customer
-      ? await syncCustomer({ ...order.customer, ...resolveOrderContactName(order) }, merchant, 'customer')
+      ? await syncCustomer({ ...order.customer, ...resolveOrderContact(order) }, merchant, 'customer')
       : undefined;
 
     const target = evaluateDealRules(

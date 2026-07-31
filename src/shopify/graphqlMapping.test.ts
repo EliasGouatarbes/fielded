@@ -62,8 +62,8 @@ test('mapGraphqlOrder maps a fully-populated node with line items', () => {
     displayFulfillmentStatus: 'fulfilled',
     cancelledAt: null,
     customer: { firstName: 'Jane', defaultEmailAddress: { emailAddress: 'jane@example.com' } },
-    billingAddress: { firstName: 'John', lastName: 'Smith' },
-    shippingAddress: { firstName: 'John', lastName: 'Smith' },
+    billingAddress: { firstName: 'John', lastName: 'Smith', address1: '456 Side St', city: 'Turku', province: null, zip: '20100', country: 'Finland' },
+    shippingAddress: { firstName: 'John', lastName: 'Smith', address1: '456 Side St', city: 'Turku', province: null, zip: '20100', country: 'Finland' },
     lineItems: {
       edges: [
         {
@@ -96,8 +96,17 @@ test('mapGraphqlOrder maps a fully-populated node with line items', () => {
   assert.equal(mapped.fulfillment_status, 'fulfilled');
   assert.equal(mapped.cancelled_at, null);
   assert.equal(mapped.customer?.email, 'jane@example.com');
-  assert.deepEqual(mapped.billing_address, { first_name: 'John', last_name: 'Smith' });
-  assert.deepEqual(mapped.shipping_address, { first_name: 'John', last_name: 'Smith' });
+  const expectedAddress = {
+    first_name: 'John',
+    last_name: 'Smith',
+    address1: '456 Side St',
+    city: 'Turku',
+    province: null,
+    zip: '20100',
+    country: 'Finland',
+  };
+  assert.deepEqual(mapped.billing_address, expectedAddress);
+  assert.deepEqual(mapped.shipping_address, expectedAddress);
   assert.deepEqual(mapped.line_items, [
     { title: 'T-Shirt', quantity: 2, price: '20.00', sku: 'TSHIRT-1', variant_title: 'Large / Blue' },
     { title: 'Sticker Pack', quantity: 1, price: '2.50', sku: null, variant_title: null },

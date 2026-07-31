@@ -2477,3 +2477,34 @@ marketing suite or Stacksync's enterprise-scale sync.
     order #1009) are not retroactively corrected — either place a new test
     order under the same email and confirm the Contact updates to the newly
     typed name, or re-run backfill for that order, to close the loop.
+    **[REVISED same day, 2026-07-31]** The exact same bug, one field wider:
+    the user's next test order (#1013) synced the corrected name ("Test
+    Test") but still carried the stale street address ("Fredrikinkatu 24"
+    on file from the earlier `test@gmail.com` Customer profile) instead of
+    what was actually typed at that checkout ("Testing street", 00300
+    Helsinki). The first pass only special-cased `first_name`/`last_name`;
+    `default_address` (address1/city/province/zip/country) still came
+    exclusively from the Customer profile.
+    Generalized the fix rather than bolting on a second special case:
+    `resolveOrderContactName` became `resolveOrderContact`, now resolving
+    the *whole* contact snapshot — name and address together, as one unit
+    — from whichever of `order.billing_address`/`shipping_address` has any
+    content (checked across all of first/last name, address1, city, zip,
+    country, not just name), falling back per-field to the Customer profile
+    only when neither order address has anything at all. `syncOrder` spreads
+    this over `order.customer` in place of the old name-only override, so
+    `default_address` gets replaced along with the name in one pass.
+    `graphqlMapping.ts`'s `billingAddress`/`shippingAddress` query fields
+    widened to also select `address1 city province zip country` (previously
+    name-only), and `mapGraphqlOrderAddress` now maps the full address
+    through — same shared `ORDER_NODE_FIELDS` selection, so this covers the
+    webhook, backfill, and refund-refetch paths identically, same as the
+    first pass.
+    `npm run build` clean; all 85 tests pass (`sync.test.ts` rewritten
+    around `resolveOrderContact` — billing-wins, shipping-fallback,
+    customer-fallback, and a mixed case where the winning address block has
+    no name but the customer profile does; `graphqlMapping.test.ts`'s
+    billing/shipping fixtures widened to a full address). Still not
+    live-verified against a real order — same follow-up as the first pass
+    (a fresh test order or a backfill re-run) would confirm both the name
+    and address land correctly together this time.
