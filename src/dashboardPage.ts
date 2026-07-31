@@ -52,6 +52,12 @@ export function renderDashboardPage(): string {
       block that on its own. If this sounds like your setup, get in touch first (see the link at the bottom of this
       page) before starting the import below, so we can check with you.</p>
     </div>
+    <div class="banner-info">
+      <p>Every imported order that doesn't match one of your <a href="#deal-rules-section">deal routing rules</a>
+      below lands in your default pipeline &amp; stage (shown under Connection status above). If you want specific
+      orders routed differently, set that up first — this import uses whatever rules exist at the moment you start
+      it, not rules added afterward.</p>
+    </div>
     <div id="backfill-body"></div>
     <button type="button" id="retry-backfill-btn" class="btn">Start historical import</button>
   </section>
@@ -59,8 +65,14 @@ export function renderDashboardPage(): string {
   <section id="deal-rules-section">
     <h2>Deal routing rules</h2>
     <p class="muted">Route orders to a specific pipeline, stage, or owner based on their status. Rules are checked
-    top to bottom — the first one that matches an order wins. An order that matches nothing below uses your
-    default pipeline &amp; stage (shown under Connection status above).</p>
+    top to bottom — the first one that matches an order wins.</p>
+    <div class="banner-info">
+      <p><strong>Rules are optional, not required.</strong> Whether you add none or several, every order that
+      doesn't match a rule below (including if you have no rules at all) automatically lands in your default
+      pipeline &amp; stage — shown under Connection status above, and set automatically the first time you
+      connected HubSpot. Add a rule only for cases you want handled differently, e.g. routing refunded orders to a
+      separate pipeline.</p>
+    </div>
     <div id="deal-rules-options-banner"></div>
     <div id="deal-rules-error"></div>
     <div id="deal-rules-list"></div>
