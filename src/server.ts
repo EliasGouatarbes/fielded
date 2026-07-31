@@ -86,15 +86,27 @@ app.get('/health', asyncHandler(async (_req, res) => {
   });
 }));
 
-// The bare app URL — what a merchant lands on if they click this app from
-// Shopify Admin's app list (this app isn't embedded, so that just opens
-// application_url directly) or otherwise guesses at the domain. Previously
-// unhandled, so this was a raw, unbranded Express "Cannot GET /" crash
-// (confirmed live in the pre-launch audit, 2026-07-29) — not a recovery
-// flow, just an honest, branded page telling them what this is and where to
-// actually go, since a merchant landing here has no shop context we could
-// use to guess their dashboard URL for them.
-app.get('/', (_req, res) => {
+// The bare app URL — this app's "legacy install flow" setting (see
+// shopify.app.testapp.toml) means Shopify sends merchants (and its own
+// automated install-flow check) straight here, with ?shop=...&hmac=...&
+// host=...&timestamp=... attached, expecting this exact request to kick off
+// the OAuth handshake. Previously this route ignored those params entirely
+// and just served a static page — a real bug (caught by Shopify's automated
+// pre-submission check: "Immediately authenticates after install" failed,
+// landing on this page's URL instead of Shopify's own grant screen), not
+// just a cosmetic one. `shop` alone is enough to forward into /auth/shopify
+// below, which builds the real authorize redirect and already sanitizes it —
+// no need to re-verify this request's hmac here, since nothing trusts it yet
+// (the OAuth callback's own hmac+state check is the actual trust boundary).
+// A merchant with no shop context (e.g. guessing at the bare domain) still
+// gets the same honest fallback page as before.
+app.get('/', (req, res) => {
+  const shop = typeof req.query.shop === 'string' ? req.query.shop : undefined;
+  if (shop) {
+    res.redirect(`/auth/shopify?shop=${encodeURIComponent(shop)}`);
+    return;
+  }
+
   res.type('html').send(
     renderPage(
       'HubSpot <-> Shopify Sync',
