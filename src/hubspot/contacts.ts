@@ -13,6 +13,7 @@ export interface ContactProperties {
   firstname?: string;
   lastname?: string;
   phone?: string;
+  company?: string;
   address?: string;
   city?: string;
   state?: string;

@@ -18,10 +18,10 @@ const ORDER_NODE_FIELDS = `
     firstName
     lastName
     defaultPhoneNumber { phoneNumber }
-    defaultAddress { address1 city province zip country }
+    defaultAddress { address1 city province zip country company }
   }
-  billingAddress { firstName lastName phone address1 city province zip country }
-  shippingAddress { firstName lastName phone address1 city province zip country }
+  billingAddress { firstName lastName phone company address1 city province zip country }
+  shippingAddress { firstName lastName phone company address1 city province zip country }
   lineItems(first: 250) {
     edges {
       node {
@@ -50,7 +50,7 @@ export const CUSTOMERS_QUERY = `#graphql
           firstName
           lastName
           defaultPhoneNumber { phoneNumber }
-          defaultAddress { address1 city province zip country }
+          defaultAddress { address1 city province zip country company }
         }
       }
       pageInfo { hasNextPage endCursor }
@@ -102,6 +102,7 @@ interface GraphqlAddress {
   province?: string | null;
   zip?: string | null;
   country?: string | null;
+  company?: string | null;
 }
 
 export interface GraphqlCustomerNode {
@@ -177,6 +178,7 @@ function mapGraphqlAddress(address?: GraphqlAddress | null): ShopifyAddress | un
     province: address.province,
     zip: address.zip,
     country: address.country,
+    company: address.company,
   };
 }
 
@@ -207,6 +209,7 @@ function mapGraphqlOrderAddress(address?: GraphqlOrderAddress | null): ShopifyAd
     first_name: address.firstName,
     last_name: address.lastName,
     phone: address.phone,
+    company: address.company,
     address1: address.address1,
     city: address.city,
     province: address.province,

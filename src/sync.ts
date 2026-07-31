@@ -18,6 +18,7 @@ export interface ShopifyAddress {
   first_name?: string | null;
   last_name?: string | null;
   phone?: string | null;
+  company?: string | null;
   address1?: string | null;
   city?: string | null;
   province?: string | null;
@@ -91,6 +92,7 @@ export function resolveOrderContact(
       candidate?.first_name ||
       candidate?.last_name ||
       candidate?.phone ||
+      candidate?.company ||
       candidate?.address1 ||
       candidate?.city ||
       candidate?.zip ||
@@ -108,6 +110,7 @@ export function resolveOrderContact(
     last_name: address.last_name ?? order.customer?.last_name,
     phone: address.phone ?? order.customer?.phone,
     default_address: {
+      company: address.company,
       address1: address.address1,
       city: address.city,
       province: address.province,
@@ -173,6 +176,7 @@ export async function syncCustomer(
       firstname: customer.first_name ?? undefined,
       lastname: customer.last_name ?? undefined,
       phone: customer.phone ?? undefined,
+      company: customer.default_address?.company ?? undefined,
       address: customer.default_address?.address1 ?? undefined,
       city: customer.default_address?.city ?? undefined,
       state: customer.default_address?.province ?? undefined,

@@ -32,7 +32,7 @@ test('mapGraphqlCustomer maps a fully-populated node', () => {
     firstName: 'Jane',
     lastName: 'Doe',
     defaultPhoneNumber: { phoneNumber: '+15551234567' },
-    defaultAddress: { address1: '123 Main St', city: 'Springfield', province: 'IL', zip: '62704', country: 'US' },
+    defaultAddress: { address1: '123 Main St', city: 'Springfield', province: 'IL', zip: '62704', country: 'US', company: 'Acme Inc' },
   };
 
   assert.deepEqual(mapGraphqlCustomer(node), {
@@ -41,7 +41,7 @@ test('mapGraphqlCustomer maps a fully-populated node', () => {
     first_name: 'Jane',
     last_name: 'Doe',
     phone: '+15551234567',
-    default_address: { address1: '123 Main St', city: 'Springfield', province: 'IL', zip: '62704', country: 'US' },
+    default_address: { address1: '123 Main St', city: 'Springfield', province: 'IL', zip: '62704', country: 'US', company: 'Acme Inc' },
   });
 });
 
@@ -66,6 +66,7 @@ test('mapGraphqlOrder maps a fully-populated node with line items', () => {
       firstName: 'John',
       lastName: 'Smith',
       phone: '+358401112222',
+      company: 'Acme Oy',
       address1: '456 Side St',
       city: 'Turku',
       province: null,
@@ -76,6 +77,7 @@ test('mapGraphqlOrder maps a fully-populated node with line items', () => {
       firstName: 'John',
       lastName: 'Smith',
       phone: '+358401112222',
+      company: 'Acme Oy',
       address1: '456 Side St',
       city: 'Turku',
       province: null,
@@ -118,6 +120,7 @@ test('mapGraphqlOrder maps a fully-populated node with line items', () => {
     first_name: 'John',
     last_name: 'Smith',
     phone: '+358401112222',
+    company: 'Acme Oy',
     address1: '456 Side St',
     city: 'Turku',
     province: null,

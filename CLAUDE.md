@@ -2534,3 +2534,62 @@ marketing suite or Stacksync's enterprise-scale sync.
     re-run against an existing order) confirming name, address, *and* phone
     together is the next real check, rather than trusting a fourth field
     won't surface the same way.
+    **[REVISED once more same day, 2026-07-31]** Explicit user ask, after
+    three rounds of the same bug surfacing one field at a time: audit every
+    Shopify field this app maps into HubSpot, not just wait for the next
+    one to get reported. Went through `ContactProperties`
+    (`src/hubspot/contacts.ts`) and `DealProperties`
+    (`src/hubspot/deals.ts`) field by field against what Shopify actually
+    provides:
+    - `email`/`firstname`/`lastname`/`phone`/`address`/`city`/`state`/`zip`/
+      `country`/`lifecyclestage` — all now correctly prefer this order's
+      billing/shipping data over the stale Customer profile, per the three
+      passes above. `email` itself was never at risk of the same bug — it's
+      the identifier Shopify uses to find-or-create the linked Customer in
+      the first place, so unlike name/phone/address it can't diverge from
+      what was typed at this checkout.
+    - **Found one real gap, not a staleness bug but a field never mapped at
+      all: `company`.** Shopify's address objects (`defaultAddress`,
+      `billing_address`, `shipping_address`) all carry a `company` field
+      that this app never read or synced, even though HubSpot Contacts have
+      a standard `company` text property (no custom-property setup
+      needed, unlike the currency-code case in `deals.ts`). Fixed the same
+      way as the other address fields: `company` added to `ShopifyAddress`
+      and `ContactProperties`, included in `resolveOrderContact`'s
+      billing/shipping precedence and its "does this address block have
+      anything" check, and added to the `defaultAddress`/`billingAddress`/
+      `shippingAddress` GraphQL selections (`graphqlMapping.ts`) and their
+      mappers — same three sync paths (webhook, backfill, refund re-fetch)
+      as every fix above, same pattern, no new special-casing.
+    - **Deliberately not added: anything Shopify exposes that has no
+      standard HubSpot property to land in** — order/customer `tags`,
+      order `note`, `discount_codes`, `accepts_marketing`, `orders_count`,
+      `total_spent`, address line 2. `contacts.ts`'s own header comment
+      already states the reasoning this follows: hand-map only to known
+      HubSpot standard properties, never guess at a property name that may
+      not exist in a given merchant's portal. `deals.ts`'s
+      `isCurrencyValidationError`/`writeDealProperties` fallback exists
+      *because* HubSpot 400s outright on a property value it doesn't
+      recognize (there, an unconfigured currency) — sending a nonstandard
+      property name (not just value) would 400 the same way for every
+      merchant who hasn't manually created that custom property, which
+      isn't a one-merchant edge case to retry around but a guaranteed
+      failure for all of them. Real support for these would mean either
+      picking a documented custom-property naming convention and asking
+      each merchant to create it (a real onboarding/docs change) or
+      querying the portal's actual property schema first — both bigger
+      builds than this pass, flagged here rather than silently skipped.
+    - **Also confirmed, not a gap**: Deals have no equivalent staleness
+      risk at all — unlike Contacts (repeat-keyed by email across many
+      orders, which is what let a stale Customer profile leak through),
+      each Deal is keyed 1:1 by `dealname` (the order number) with no
+      shared profile object in between, so there's no second source for
+      `upsertDealByName` to prefer one way or the other.
+    `npm run build` clean; all 87 tests pass (`sync.test.ts` gained a
+    company-precedence case — order company wins over the profile's, and a
+    company-only address block still gets picked; `graphqlMapping.test.ts`'s
+    customer/billing/shipping fixtures all gained a company value). Still
+    not live-verified against a real order — four rounds deep on unit tests
+    now; a real test order (or backfill re-run) checking name, address,
+    phone, *and* company together in one HubSpot Contact is the real close-
+    out check this whole step has been deferring.

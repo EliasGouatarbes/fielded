@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveOrderContact, ShopifyOrder } from './sync';
 
-test('resolveOrderContact prefers the billing address name, phone, and address over the customer profile', () => {
+test('resolveOrderContact prefers the billing address name, phone, company, and address over the customer profile', () => {
   const order: ShopifyOrder = {
     name: '#1009',
     customer: {
@@ -10,12 +10,13 @@ test('resolveOrderContact prefers the billing address name, phone, and address o
       first_name: 'Elias',
       last_name: 'Gouatarbes',
       phone: '+358 40 000 0000',
-      default_address: { address1: 'Fredrikinkatu 24', city: 'Helsinki', country: 'Finland' },
+      default_address: { address1: 'Fredrikinkatu 24', city: 'Helsinki', country: 'Finland', company: 'Old Co' },
     },
     billing_address: {
       first_name: 'Test',
       last_name: 'Test',
       phone: '+358 40 111 1111',
+      company: 'Acme Oy',
       address1: 'Testing street',
       city: 'Helsinki',
       zip: '00300',
@@ -25,6 +26,7 @@ test('resolveOrderContact prefers the billing address name, phone, and address o
       first_name: 'Test',
       last_name: 'Test',
       phone: '+358 40 111 1111',
+      company: 'Acme Oy',
       address1: 'Testing street',
       city: 'Helsinki',
       zip: '00300',
@@ -35,7 +37,14 @@ test('resolveOrderContact prefers the billing address name, phone, and address o
     first_name: 'Test',
     last_name: 'Test',
     phone: '+358 40 111 1111',
-    default_address: { address1: 'Testing street', city: 'Helsinki', province: undefined, zip: '00300', country: 'Finland' },
+    default_address: {
+      company: 'Acme Oy',
+      address1: 'Testing street',
+      city: 'Helsinki',
+      province: undefined,
+      zip: '00300',
+      country: 'Finland',
+    },
   });
 });
 
@@ -58,7 +67,7 @@ test('resolveOrderContact falls back to the shipping address when billing has no
     first_name: 'Jane',
     last_name: 'Doe',
     phone: '+358 40 222 2222',
-    default_address: { address1: '456 Side St', city: 'Turku', province: undefined, zip: '20100', country: 'Finland' },
+    default_address: { company: undefined, address1: '456 Side St', city: 'Turku', province: undefined, zip: '20100', country: 'Finland' },
   });
 });
 
@@ -91,4 +100,19 @@ test('resolveOrderContact picks the order address block on phone alone, even wit
   };
   const resolved = resolveOrderContact(order);
   assert.equal(resolved.phone, '+358 40 333 3333');
+});
+
+test('resolveOrderContact picks the order address block on company alone, and reports the order company over the profile', () => {
+  const order: ShopifyOrder = {
+    name: '#1014',
+    customer: {
+      email: 'test@gmail.com',
+      first_name: 'Elias',
+      last_name: 'Gouatarbes',
+      default_address: { company: 'Old Co' },
+    },
+    billing_address: { company: 'New Order Co' },
+  };
+  const resolved = resolveOrderContact(order);
+  assert.equal(resolved.default_address?.company, 'New Order Co');
 });
