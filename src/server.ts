@@ -14,6 +14,7 @@ import { renderDashboardPage } from './dashboardPage';
 import { renderPrivacyPolicyPage } from './privacyPolicyPage';
 import { renderTermsPage } from './termsPage';
 import { renderDpaPage } from './dpaPage';
+import { renderPricingPage } from './pricingPage';
 import { renderPage } from './htmlPage';
 import { TRUST_PROXY_HOPS, apiRateLimiter } from './rateLimit';
 import { backfillMerchant } from './backfillMerchant';
@@ -118,6 +119,12 @@ app.get('/terms', (_req, res) => {
 
 app.get('/data-processing-agreement', (_req, res) => {
   res.type('html').send(renderDpaPage());
+});
+
+// Linked from Shopify Partner Dashboard's "manual pricing" plan as the
+// "URL where merchants can find more pricing information."
+app.get('/pricing', (_req, res) => {
+  res.type('html').send(renderPricingPage());
 });
 
 // --- Merchant dashboard (closes the "no UI after onboarding" gap found in

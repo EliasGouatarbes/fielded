@@ -243,7 +243,7 @@ export function renderPage(title: string, bodyHtml: string, options: RenderPageO
 <div class="card${options.wide ? ' wide' : ''}">
 ${bodyHtml}
 <p class="page-footer muted">Need help? <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a></p>
-<p class="page-footer-links muted"><a href="/privacy-policy">Privacy Policy</a> &middot; <a href="/terms">Terms of Service</a> &middot; <a href="/data-processing-agreement">Data Processing Agreement</a></p>
+<p class="page-footer-links muted"><a href="/pricing">Pricing</a> &middot; <a href="/privacy-policy">Privacy Policy</a> &middot; <a href="/terms">Terms of Service</a> &middot; <a href="/data-processing-agreement">Data Processing Agreement</a></p>
 </div>
 </body>
 </html>`;
