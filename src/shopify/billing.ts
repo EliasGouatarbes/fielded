@@ -76,6 +76,62 @@ export interface CreatedSubscription {
   trialEndsAt: Date;
 }
 
+// Discriminated so the caller (src/shopify/oauth.ts's /auth/shopify/billing)
+// can skip redirecting into Shopify's confirmation page entirely when
+// there's nothing left to confirm — added after Shopify's own AI Toolkit
+// review flagged that every hit of that route (including a merchant simply
+// reconnecting, not just a fresh install) called appSubscriptionCreate
+// unconditionally, with no check for an already-active subscription.
+export type CreateSubscriptionResult =
+  | ({ status: 'created' } & CreatedSubscription)
+  | { status: 'already_active'; subscriptionId: string };
+
+interface ExistingSubscription {
+  id: string;
+  status: string;
+}
+
+// Shared by createSubscription's guard below and refreshBillingStatus.
+async function findLiveSubscription(shopDomain: string): Promise<ExistingSubscription | undefined> {
+  const data = await shopifyGraphqlRequest<AllSubscriptionsResponse>(
+    shopDomain,
+    ALL_SUBSCRIPTIONS_QUERY,
+    undefined,
+    'Shopify existing-subscription lookup'
+  );
+  return data.currentAppInstallation.allSubscriptions.edges
+    .map((edge) => edge.node)
+    .find((node) => node.status === 'ACTIVE' || node.status === 'PENDING');
+}
+
+interface AppSubscriptionCancelResponse {
+  appSubscriptionCancel: {
+    appSubscription: { id: string } | null;
+    userErrors: Array<{ field?: string[]; message: string }>;
+  };
+}
+
+const APP_SUBSCRIPTION_CANCEL_MUTATION = `#graphql
+  mutation AppSubscriptionCancel($id: ID!) {
+    appSubscriptionCancel(id: $id) {
+      appSubscription { id }
+      userErrors { field message }
+    }
+  }
+`;
+
+async function cancelSubscription(shopDomain: string, subscriptionId: string): Promise<void> {
+  const result = await shopifyGraphqlRequest<AppSubscriptionCancelResponse>(
+    shopDomain,
+    APP_SUBSCRIPTION_CANCEL_MUTATION,
+    { id: subscriptionId },
+    'Shopify app subscription cancel'
+  );
+  if (result.appSubscriptionCancel.userErrors.length > 0) {
+    throw new Error(`Shopify rejected cancellation: ${result.appSubscriptionCancel.userErrors.map((e) => e.message).join('; ')}`);
+  }
+}
+
 // Kicks off Shopify's own billing flow for a newly-connected Shopify
 // merchant — called from the Shopify OAuth callback (src/shopify/oauth.ts)
 // *before* HubSpot is ever connected, so nobody reaches full use of the app
@@ -83,7 +139,30 @@ export interface CreatedSubscription {
 // one). Denominates the charge in the merchant's own local billing currency
 // — queried fresh via shopBillingPreferences, a real mechanism the Billing
 // API provides, not an approximation — rather than a single fixed currency.
-export async function createSubscription(shopDomain: string, returnUrl: string): Promise<CreatedSubscription> {
+//
+// Guards against duplicate subscriptions first: this route is also reached
+// by a merchant simply reconnecting (not just a fresh install), which
+// previously called appSubscriptionCreate every time with no check for an
+// existing one. An already-ACTIVE subscription is reused as-is (nothing to
+// re-approve). A still-PENDING one has no recoverable confirmationUrl —
+// Shopify only returns that once, at creation — so a merchant who lost that
+// tab would otherwise be stuck; it's cancelled and replaced with a fresh one
+// rather than left to pile up indefinitely. Best-effort: a failed cancel is
+// logged and swallowed rather than blocking the new subscription attempt.
+export async function createSubscription(shopDomain: string, returnUrl: string): Promise<CreateSubscriptionResult> {
+  const existing = await findLiveSubscription(shopDomain);
+  if (existing?.status === 'ACTIVE') {
+    await updateBillingStatus(shopDomain, 'ACTIVE');
+    return { status: 'already_active', subscriptionId: existing.id };
+  }
+  if (existing?.status === 'PENDING') {
+    try {
+      await cancelSubscription(shopDomain, existing.id);
+    } catch (err) {
+      console.warn(`Could not cancel stale pending subscription ${existing.id} for ${shopDomain} (continuing anyway):`, err);
+    }
+  }
+
   const prefs = await shopifyGraphqlRequest<ShopBillingPreferencesResponse>(
     shopDomain,
     SHOP_BILLING_PREFERENCES_QUERY,
@@ -124,7 +203,7 @@ export async function createSubscription(shopDomain: string, returnUrl: string):
     trialEndsAt,
   });
 
-  return { subscriptionId: appSubscription.id, confirmationUrl, trialEndsAt };
+  return { status: 'created', subscriptionId: appSubscription.id, confirmationUrl, trialEndsAt };
 }
 
 interface AllSubscriptionsResponse {

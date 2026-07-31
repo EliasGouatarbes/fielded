@@ -186,8 +186,16 @@ shopifyOAuthRouter.get('/auth/shopify/billing', oauthRateLimiter, asyncHandler(a
 
   const returnUrl = `${config.server.appUrl}/auth/shopify/billing-callback?shop=${encodeURIComponent(shopDomain)}`;
   try {
-    const { confirmationUrl } = await createSubscription(shopDomain, returnUrl);
-    res.redirect(confirmationUrl);
+    const result = await createSubscription(shopDomain, returnUrl);
+    if (result.status === 'already_active') {
+      // Nothing to confirm — skip Shopify's confirmation page entirely and
+      // go straight to the same "Shopify connected" success page a fresh
+      // approval would land on (billing-callback re-confirms ACTIVE, which
+      // it already is).
+      res.redirect(`/auth/shopify/billing-callback?shop=${encodeURIComponent(shopDomain)}`);
+      return;
+    }
+    res.redirect(result.confirmationUrl);
   } catch (err) {
     console.error(`Failed to create Shopify subscription for ${shopDomain}:`, err);
     res.status(502).type('html').send(renderErrorPage('Failed to start billing setup with Shopify. Check server logs.'));
