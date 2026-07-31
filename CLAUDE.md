@@ -2508,3 +2508,29 @@ marketing suite or Stacksync's enterprise-scale sync.
     live-verified against a real order — same follow-up as the first pass
     (a fresh test order or a backfill re-run) would confirm both the name
     and address land correctly together this time.
+    **[REVISED again same day, 2026-07-31]** Same bug, third field: phone
+    had the identical problem — `resolveOrderContact` only ever resolved
+    name and address, so `ContactProperties.phone` (`src/sync.ts`'s
+    `syncCustomer` call, reading `customer.phone`) still fell through to
+    the stale Customer profile's phone number untouched. Rather than wait
+    for a third bug report against the same root cause, folded phone into
+    the same resolution pass instead of leaving it as a known gap: `phone`
+    added to `ShopifyAddress`, included in the address-block "does this
+    order address have anything at all" check alongside name/address1/
+    city/zip/country, and returned with the same per-field fallback
+    (`address.phone ?? order.customer?.phone`) as name. `graphqlMapping.ts`
+    widened the same way as the address fields before it — `phone` added to
+    both `billingAddress`/`shippingAddress` in `ORDER_NODE_FIELDS` and
+    mapped through `mapGraphqlOrderAddress` — so this again covers the
+    webhook, backfill, and refund-refetch paths in one place, no
+    per-path special-casing.
+    `npm run build` clean; all 86 tests pass (`sync.test.ts` gained two
+    phone-specific cases — billing phone wins over the customer profile,
+    and an address block with *only* a phone, no name or street, still gets
+    picked over the customer profile; `graphqlMapping.test.ts`'s billing/
+    shipping fixtures gained a phone value). Not live-verified against a
+    real order, same as the two passes above — this has now gone three
+    rounds on unit tests alone, so a real end-to-end order (or a backfill
+    re-run against an existing order) confirming name, address, *and* phone
+    together is the next real check, rather than trusting a fourth field
+    won't surface the same way.

@@ -17,6 +17,7 @@ import { isAuthError } from './retry';
 export interface ShopifyAddress {
   first_name?: string | null;
   last_name?: string | null;
+  phone?: string | null;
   address1?: string | null;
   city?: string | null;
   province?: string | null;
@@ -73,25 +74,39 @@ export interface ShopifyOrder {
   line_items?: ShopifyLineItem[] | null;
 }
 
-// Prefers the name and address actually entered on this order's checkout
-// (billing, then shipping) over the linked Shopify Customer profile's own
-// stored details — a repeat email keeps its original Customer profile info
-// regardless of what's typed at checkout on a later order, which is
-// surprising when that later order's info is what a merchant actually
-// expects to see synced (both the name and, e.g., a different shipping
-// address for a gift order). Pure/exported so this precedence is
-// independently testable without a live order.
-export function resolveOrderContact(order: ShopifyOrder): Pick<ShopifyCustomer, 'first_name' | 'last_name' | 'default_address'> {
+// Prefers the name, phone, and address actually entered on this order's
+// checkout (billing, then shipping) over the linked Shopify Customer
+// profile's own stored details — a repeat email keeps its original Customer
+// profile info regardless of what's typed at checkout on a later order,
+// which is surprising when that later order's info is what a merchant
+// actually expects to see synced (the name, a different shipping address
+// for a gift order, or a different phone number for whoever placed this
+// particular order). Pure/exported so this precedence is independently
+// testable without a live order.
+export function resolveOrderContact(
+  order: ShopifyOrder
+): Pick<ShopifyCustomer, 'first_name' | 'last_name' | 'phone' | 'default_address'> {
   const address = [order.billing_address, order.shipping_address].find(
     (candidate) =>
-      candidate?.first_name || candidate?.last_name || candidate?.address1 || candidate?.city || candidate?.zip || candidate?.country
+      candidate?.first_name ||
+      candidate?.last_name ||
+      candidate?.phone ||
+      candidate?.address1 ||
+      candidate?.city ||
+      candidate?.zip ||
+      candidate?.country
   );
   if (!address) {
-    return { first_name: order.customer?.first_name, last_name: order.customer?.last_name };
+    return {
+      first_name: order.customer?.first_name,
+      last_name: order.customer?.last_name,
+      phone: order.customer?.phone,
+    };
   }
   return {
     first_name: address.first_name ?? order.customer?.first_name,
     last_name: address.last_name ?? order.customer?.last_name,
+    phone: address.phone ?? order.customer?.phone,
     default_address: {
       address1: address.address1,
       city: address.city,

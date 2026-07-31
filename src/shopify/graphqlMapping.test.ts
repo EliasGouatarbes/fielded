@@ -62,8 +62,26 @@ test('mapGraphqlOrder maps a fully-populated node with line items', () => {
     displayFulfillmentStatus: 'fulfilled',
     cancelledAt: null,
     customer: { firstName: 'Jane', defaultEmailAddress: { emailAddress: 'jane@example.com' } },
-    billingAddress: { firstName: 'John', lastName: 'Smith', address1: '456 Side St', city: 'Turku', province: null, zip: '20100', country: 'Finland' },
-    shippingAddress: { firstName: 'John', lastName: 'Smith', address1: '456 Side St', city: 'Turku', province: null, zip: '20100', country: 'Finland' },
+    billingAddress: {
+      firstName: 'John',
+      lastName: 'Smith',
+      phone: '+358401112222',
+      address1: '456 Side St',
+      city: 'Turku',
+      province: null,
+      zip: '20100',
+      country: 'Finland',
+    },
+    shippingAddress: {
+      firstName: 'John',
+      lastName: 'Smith',
+      phone: '+358401112222',
+      address1: '456 Side St',
+      city: 'Turku',
+      province: null,
+      zip: '20100',
+      country: 'Finland',
+    },
     lineItems: {
       edges: [
         {
@@ -99,6 +117,7 @@ test('mapGraphqlOrder maps a fully-populated node with line items', () => {
   const expectedAddress = {
     first_name: 'John',
     last_name: 'Smith',
+    phone: '+358401112222',
     address1: '456 Side St',
     city: 'Turku',
     province: null,
