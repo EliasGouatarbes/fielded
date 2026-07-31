@@ -199,8 +199,8 @@ export function renderDashboardPage(): string {
       ['Shop', data.shopDomain],
       ['Billing', billingLabel],
       ['HubSpot portal', data.hubspotPortalId || 'not connected'],
-      ['Default pipeline', data.dealPipeline || '(portal default)'],
-      ['Default stage', data.dealStage || '(portal default)']
+      ['Default pipeline', data.dealPipeline || '(not set — reconnect HubSpot to fix)'],
+      ['Default stage', data.dealStage || '(not set — reconnect HubSpot to fix)']
     ];
     rows.forEach(function (pair) {
       var tr = document.createElement('tr');

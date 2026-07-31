@@ -1,11 +1,13 @@
 import crypto from 'crypto';
 import { Router } from 'express';
+import { Client as HubSpotClient } from '@hubspot/api-client';
 import { config } from '../config';
-import { getMerchant, saveHubSpotConnection, saveAdminApiKeyHash } from '../db/merchants';
+import { getMerchant, saveHubSpotConnection, saveAdminApiKeyHash, saveDealPipelineDefaults } from '../db/merchants';
 import { normalizeShopDomain } from '../shopify/token';
 import { shopify } from '../shopify/oauth';
 import { createOAuthState, verifyOAuthState } from '../oauthState';
 import { exchangeHubSpotToken, fetchHubSpotPortalId } from './tokens';
+import { fetchDealPipelineOptions } from './options';
 import { registerWebhooksForShop } from '../shopify/webhookRegistration';
 import { renderPage, renderErrorPage } from '../htmlPage';
 import { oauthRateLimiter } from '../rateLimit';
@@ -162,6 +164,36 @@ hubspotOAuthRouter.get(OAUTH_CALLBACK_PATH, oauthRateLimiter, asyncHandler(async
     console.log(`Shop: ${shop}`);
     console.log(`HubSpot portal: ${portalId}`);
     console.log('Tokens saved to the database (merchants table).\n');
+
+    // Best-effort, non-fatal (same reasoning as the shop-contact-email fetch
+    // below): a merchant who never sets up a deal rule falls through to
+    // evaluateDealRules' "no rules matched" branch, which previously
+    // returned two blank strings with no write path ever having populated
+    // them — upsertDealByName then omits both properties from the create
+    // call entirely. Found live (2026-07-31): HubSpot does not visibly
+    // default a pipeline-less deal onto any board; it's created successfully
+    // (reachable directly by id/search) but invisible on every pipeline
+    // view, which reads as "deals aren't syncing" even though they are.
+    // Only runs when this merchant has no default on file yet — never
+    // overwrites a value a future "change default pipeline" dashboard
+    // feature might set. Picks the portal's first non-archived pipeline and
+    // its first (lowest displayOrder) non-archived stage — not a guess at a
+    // hardcoded id, which could be wrong for a portal that customized or
+    // deleted the standard "Sales Pipeline".
+    if (!merchant.dealPipeline && !merchant.dealStage) {
+      try {
+        const pipelines = await fetchDealPipelineOptions(new HubSpotClient({ accessToken: tokenResponse.access_token }));
+        const firstPipeline = pipelines.find((p) => p.stages.length > 0);
+        if (firstPipeline) {
+          await saveDealPipelineDefaults(shop, firstPipeline.id, firstPipeline.stages[0].id);
+          console.log(`Default deal pipeline/stage set for ${shop}: "${firstPipeline.label}" / "${firstPipeline.stages[0].label}".`);
+        } else {
+          console.warn(`No usable HubSpot deal pipeline found for ${shop} — deals will sync without a pipeline until one is added.`);
+        }
+      } catch (err) {
+        console.warn(`Could not set a default deal pipeline/stage for ${shop} (non-fatal, deals will still sync):`, err);
+      }
+    }
 
     // Previously a CLI-only step (`npm run register-webhooks`) nobody but
     // the developer could run — a real merchant self-installing from the

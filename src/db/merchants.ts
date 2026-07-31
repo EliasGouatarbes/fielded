@@ -187,6 +187,26 @@ export async function saveDealRules(shopDomain: string, rules: DealRule[]): Prom
   );
 }
 
+// Called only from the HubSpot OAuth callback (src/hubspot/oauth.ts), and
+// only when this merchant has no default pipeline/stage on file yet —
+// there was previously no write path for these two columns at all (only
+// per-rule pipeline/stage, via saveDealRules above, ever got a real value).
+// A merchant who never configures a deal rule fell through to
+// evaluateDealRules' "no rules matched" branch, which returned these two
+// blank strings as-is; upsertDealByName then omits both properties from the
+// HubSpot create call entirely rather than sending an empty string. Found
+// live (2026-07-31): HubSpot does NOT visibly default a pipeline-less deal
+// onto any board — the record exists and is reachable directly, but isn't
+// visible on any pipeline view, which reads as "deals aren't syncing" even
+// though the sync itself succeeded.
+export async function saveDealPipelineDefaults(shopDomain: string, pipeline: string, stage: string): Promise<void> {
+  await ensureSchema();
+  await pool.query(
+    `UPDATE merchants SET deal_pipeline = $2, deal_stage = $3, updated_at = now() WHERE shop_domain = $1`,
+    [shopDomain, pipeline, stage]
+  );
+}
+
 // Called by src/backfillMerchant.ts at each state transition (running ->
 // complete|failed) — written as a full replacement object each time rather
 // than a partial JSONB patch, so there's no read-modify-write race between

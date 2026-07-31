@@ -2593,3 +2593,64 @@ marketing suite or Stacksync's enterprise-scale sync.
     now; a real test order (or backfill re-run) checking name, address,
     phone, *and* company together in one HubSpot Contact is the real close-
     out check this whole step has been deferring.
+
+22. [DONE, VERIFIED, 2026-07-31] Deals not visible in HubSpot when no deal
+    rule matched, found by the user connecting two fresh HubSpot test
+    accounts to new test stores and noticing synced deals were reachable
+    only by direct URL/search — invisible on every pipeline board view,
+    reading as "deals aren't syncing" even though the sync itself succeeded.
+    Root cause: `merchants.deal_pipeline`/`deal_stage` (the "no rule matched"
+    fallback `evaluateDealRules` reads, `src/hubspot/dealRules.ts`) had
+    **no write path anywhere in the codebase** — the dashboard's "Default
+    pipeline: (portal default)" row was purely a read-only display of a
+    column nothing ever populated, stuck at its schema default (empty
+    string) for every merchant, forever. `upsertDealByName`
+    (`src/hubspot/deals.ts`) treats an empty pipeline/stage as "omit the
+    property entirely" rather than an empty value, and — confirmed live
+    against a real portal, not assumed — HubSpot does **not** visibly
+    default a pipeline-less deal onto any board when both properties are
+    omitted from the create call; the record is created successfully and
+    reachable directly, just invisible everywhere a merchant would normally
+    look.
+    Fixed by actually giving new merchants a real default instead of a
+    silently-broken blank one: new `saveDealPipelineDefaults`
+    (`src/db/merchants.ts`) writes real pipeline/stage values into those two
+    columns, called once from the HubSpot OAuth callback
+    (`src/hubspot/oauth.ts`) right after a fresh connection, but only when
+    both are still blank (never overwrites a value a future "change
+    default" dashboard feature might set later). Rather than hardcoding
+    HubSpot's well-known built-in ids (pipeline `"default"`, first stage
+    `"appointmentscheduled"`) — which would silently break for any portal
+    that customized or deleted the standard Sales Pipeline — it reuses the
+    same `fetchDealPipelineOptions` (`src/hubspot/options.ts`) already
+    powering the dashboard's real pipeline/stage dropdowns, and picks
+    whichever non-archived pipeline the portal actually returns first
+    (its first non-archived, lowest-`displayOrder` stage). Best-effort or
+    a genuinely empty portal (no pipelines at all): logged, never blocks
+    the OAuth connect itself. Dashboard's misleading "(portal default)"
+    placeholder — which implied a working fallback that never existed —
+    changed to "(not set — reconnect HubSpot to fix)" for the (now rarer)
+    case of an already-connected merchant who hasn't reconnected since this
+    fix landed.
+    `npm run build` clean; all 87 tests pass unchanged (no new pure logic —
+    this is DB/OAuth-flow glue calling a live HubSpot API, consistent with
+    this project's established precedent of live-verifying that category
+    over unit testing it). **Live-verified against a real, already-connected
+    portal**, not just reasoned about: a throwaway script (`ts-node
+    --transpile-only`, deleted immediately after, never committed) called
+    `fetchDealPipelineOptions`/`saveDealPipelineDefaults` directly against
+    `demo-x9nz9jf0.myshopify.com`'s real HubSpot portal (149009966, one of
+    the merchants the user found this bug on) — confirmed live: the portal
+    really did return exactly one pipeline (`"default"` / "Sales Pipeline")
+    whose first stage really is `"appointmentscheduled"`, matching what
+    HubSpot ships by default, and the merchant row was correctly updated
+    from blank to those real values, closing the loop end to end. That
+    merchant's stuck state is now fixed as a side effect of this
+    verification, not just new connects going forward.
+    **Known gap, not fixed this pass**: this only fixes *new* HubSpot
+    connections from here on — every already-connected merchant besides the
+    one used for verification above still has blank pipeline/stage until
+    they reconnect HubSpot (which re-runs this same code path). No
+    proactive backfill was run against the other already-connected test
+    merchants; flagged rather than silently left for the next person to
+    rediscover the same way this one was found.
