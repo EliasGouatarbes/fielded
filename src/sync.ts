@@ -15,6 +15,8 @@ import { isAuthError } from './retry';
 // shared global.
 
 export interface ShopifyAddress {
+  first_name?: string | null;
+  last_name?: string | null;
   address1?: string | null;
   city?: string | null;
   province?: string | null;
@@ -54,12 +56,36 @@ export interface ShopifyOrder {
   // default gets a silently wrong-looking Deal amount.
   currency?: string | null;
   customer?: ShopifyCustomer | null;
+  // The name typed into checkout's Delivery/Payment steps for *this specific
+  // order* — distinct from `customer.first_name`/`last_name`, which is the
+  // linked Shopify Customer profile's name and, for a returning email,
+  // doesn't change just because a later order's checkout form was filled in
+  // differently (Shopify keeps the original profile name). syncOrder below
+  // prefers these over the customer profile's name for exactly that reason.
+  billing_address?: ShopifyAddress | null;
+  shipping_address?: ShopifyAddress | null;
   financial_status?: string | null;
   fulfillment_status?: string | null;
   // Shopify's real Order resource has no boolean `cancelled` field, only
   // this nullable timestamp — evaluateDealRules derives the boolean itself.
   cancelled_at?: string | null;
   line_items?: ShopifyLineItem[] | null;
+}
+
+// Prefers the name actually entered on this order's checkout (billing, then
+// shipping) over the linked Shopify Customer profile's name — a repeat
+// email keeps its original Customer profile name regardless of what's typed
+// at checkout on a later order, which is surprising when that later order's
+// name is the one a merchant actually expects to see synced. Pure/exported
+// so this precedence is independently testable without a live order.
+export function resolveOrderContactName(order: ShopifyOrder): { first_name?: string | null; last_name?: string | null } {
+  const candidates = [order.billing_address, order.shipping_address];
+  for (const address of candidates) {
+    if (address?.first_name || address?.last_name) {
+      return { first_name: address.first_name, last_name: address.last_name };
+    }
+  }
+  return { first_name: order.customer?.first_name, last_name: order.customer?.last_name };
 }
 
 // `lifecycleStage` is only ever passed by syncOrder below — a plain
@@ -159,7 +185,9 @@ export async function syncOrder(order: ShopifyOrder, merchant: MerchantContext):
   }
 
   try {
-    const contactId = order.customer ? await syncCustomer(order.customer, merchant, 'customer') : undefined;
+    const contactId = order.customer
+      ? await syncCustomer({ ...order.customer, ...resolveOrderContactName(order) }, merchant, 'customer')
+      : undefined;
 
     const target = evaluateDealRules(
       merchant.dealRules,

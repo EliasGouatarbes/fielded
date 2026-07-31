@@ -20,6 +20,8 @@ const ORDER_NODE_FIELDS = `
     defaultPhoneNumber { phoneNumber }
     defaultAddress { address1 city province zip country }
   }
+  billingAddress { firstName lastName }
+  shippingAddress { firstName lastName }
   lineItems(first: 250) {
     edges {
       node {
@@ -111,6 +113,11 @@ export interface GraphqlCustomerNode {
   defaultAddress?: GraphqlAddress | null;
 }
 
+interface GraphqlOrderAddress {
+  firstName?: string | null;
+  lastName?: string | null;
+}
+
 interface GraphqlLineItemNode {
   title: string;
   quantity: number;
@@ -126,6 +133,8 @@ export interface GraphqlOrderNode {
   displayFulfillmentStatus?: string | null;
   cancelledAt?: string | null;
   customer?: GraphqlCustomerNode | null;
+  billingAddress?: GraphqlOrderAddress | null;
+  shippingAddress?: GraphqlOrderAddress | null;
   lineItems?: { edges: Array<{ node: GraphqlLineItemNode }> } | null;
 }
 
@@ -191,12 +200,19 @@ function mapGraphqlLineItem(node: GraphqlLineItemNode): ShopifyLineItem {
   };
 }
 
+function mapGraphqlOrderAddress(address?: GraphqlOrderAddress | null): ShopifyAddress | undefined {
+  if (!address) return undefined;
+  return { first_name: address.firstName, last_name: address.lastName };
+}
+
 export function mapGraphqlOrder(node: GraphqlOrderNode): ShopifyOrder {
   return {
     name: node.name,
     total_price: node.currentTotalPriceSet?.shopMoney?.amount,
     currency: node.currentTotalPriceSet?.shopMoney?.currencyCode,
     customer: node.customer ? mapGraphqlCustomer(node.customer) : undefined,
+    billing_address: mapGraphqlOrderAddress(node.billingAddress),
+    shipping_address: mapGraphqlOrderAddress(node.shippingAddress),
     financial_status: node.displayFinancialStatus,
     fulfillment_status: node.displayFulfillmentStatus,
     cancelled_at: node.cancelledAt,
