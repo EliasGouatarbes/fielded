@@ -2423,3 +2423,57 @@ marketing suite or Stacksync's enterprise-scale sync.
     store; low risk regardless, since it's static string interpolation
     with no new logic branches beyond the already-reviewed `keyWillShow`
     condition.
+
+21. [DONE, 2026-07-31] Synced Contacts showed the wrong name, found by the
+    user placing a real test order and comparing Shopify's checkout screen
+    (customer typed "Test Test") against the resulting HubSpot Contact
+    (showed "Elias Gouatarbes" instead) — first suspected to be the deal
+    card's owner avatar (a different field, `hubspot_owner_id`, confirmed
+    correctly unset — "No owner"), then traced to the actual Contact record
+    itself once the user pointed out the Contact panel, not the deal card,
+    had the wrong name.
+    Root cause: `syncOrder`/`syncCustomer` (`src/sync.ts`) only ever read a
+    customer's name from `order.customer.first_name`/`last_name` — the
+    linked Shopify **Customer profile** — never from the order's own
+    billing/shipping address. Shopify's checkout doesn't rename an
+    already-existing Customer profile just because a later order's checkout
+    form was filled in with a different name; it only sets that order's
+    address block. So a repeat email (this dev store's own `test@gmail.com`,
+    used across many manual test orders) keeps reporting its original
+    profile name via every subsequent order's webhook, no matter what's
+    typed at checkout — and since `upsertContactByEmail`
+    (`src/hubspot/contacts.ts`) always overwrites `firstname`/`lastname`
+    when a value is present, every order sync actively re-wrote the Contact
+    back to the stale name rather than merely failing to update it.
+    Fixed by adding `resolveOrderContactName` (`src/sync.ts`, pure/exported/
+    tested) — prefers `order.billing_address`'s name, then
+    `order.shipping_address`'s, falling back to the Customer profile's name
+    only when neither address has one — and using it in `syncOrder` when
+    building the contact passed to `syncCustomer`. Extended `ShopifyAddress`
+    with `first_name`/`last_name` and `ShopifyOrder` with
+    `billing_address`/`shipping_address` (both already present on Shopify's
+    real webhook payload, just not typed/read before). Applied to both sync
+    paths that funnel through `syncOrder`: the live webhook receiver
+    (`orders/create`/`orders/updated`/`refunds/create` in
+    `src/shopify/webhooks.ts`) picks this up for free since it already casts
+    the raw webhook body; the GraphQL historical backfill
+    (`src/shopify/graphqlMapping.ts`) needed `billingAddress { firstName
+    lastName }`/`shippingAddress { firstName lastName }` added to the shared
+    `ORDER_NODE_FIELDS` query and `mapGraphqlOrder` updated to map them
+    through — same field selection used by `ORDERS_QUERY` and
+    `ORDER_BY_ID_QUERY`, so both the paginated backfill and the single-order
+    refund re-fetch pick it up identically. A bare `customers/create`
+    webhook (no order context) is unaffected by design — there's no
+    order-specific address to prefer there, so it still uses the Customer
+    profile's own name, which is the only name that exists for that case.
+    `npm run build` clean; all 84 tests pass (81 previous + 3 new for
+    `resolveOrderContactName`'s billing/shipping/fallback precedence,
+    `src/sync.test.ts`; `graphqlMapping.test.ts` extended to cover the new
+    query fields).
+    **Not live-verified this pass** — unlike most entries above, this
+    shipped on unit tests + a clean build alone, no real Shopify
+    order/webhook round-trip against the dev store. Existing HubSpot
+    Contacts synced before this fix (e.g. the "Elias Gouatarbes" one from
+    order #1009) are not retroactively corrected — either place a new test
+    order under the same email and confirm the Contact updates to the newly
+    typed name, or re-run backfill for that order, to close the loop.
