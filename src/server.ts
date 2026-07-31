@@ -27,6 +27,30 @@ const app = express();
 // logic) to see real client IPs rather than Render's own proxy address —
 // see src/rateLimit.ts for why this trusts only one hop.
 app.set('trust proxy', TRUST_PROXY_HOPS);
+
+// Defense-in-depth HTTPS enforcement — flagged by Shopify's AI Toolkit
+// app-store review (requirement 3.1.1): Render terminates TLS and (per its
+// own platform behavior) already redirects a custom domain's plain HTTP
+// traffic at its edge, but that's an external guarantee this app's own code
+// never actually verified. `req.secure` reflects the real origin protocol
+// correctly here because `trust proxy` above is already set, so this reads
+// Render's `X-Forwarded-Proto` rather than the (always-plain-HTTP) hop
+// between Render's edge and this container. Skipped entirely when APP_URL
+// itself isn't https:// (local dev), same convention already used by
+// src/shopify/webhookRegistration.ts's own https-only guard — and skipped
+// for /health specifically, since Render's own internal health probe may
+// hit this container directly, bypassing the edge that sets that header.
+if (config.server.appUrl.startsWith('https://')) {
+  app.use((req, res, next) => {
+    if (req.path === '/health' || req.secure) {
+      if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+      next();
+      return;
+    }
+    res.redirect(301, `https://${req.headers.host}${req.originalUrl}`);
+  });
+}
+
 app.use(
   express.json({
     // Stash the raw bytes alongside the parsed body — the webhook HMAC
