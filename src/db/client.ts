@@ -35,6 +35,28 @@ pool.on('error', (err) => {
   console.error('Unexpected error on idle database client (pool recovers automatically):', err);
 });
 
+// Identifies *which* database a connection string points at without ever
+// exposing the password — username@host. Host alone isn't enough: Supabase's
+// pooler hostname (aws-0-<region>.pooler.supabase.com) is shared
+// infrastructure across every project in that region, so two completely
+// different projects/databases show the identical host; only the username
+// (postgres.<project-ref>) actually distinguishes them. Shared by server.ts
+// (boot log / GET /health) and the backup/restore-drill scripts, which use
+// it as a safety confirmation before writing anywhere.
+export function databaseIdentity(connectionString: string): string {
+  const url = new URL(connectionString);
+  return `${url.username}@${url.host}`;
+}
+
+// The bare project-ref portion of databaseIdentity's username
+// (postgres.<ref> -> <ref>) — what an operator actually recognizes at a
+// glance and what restoreDrill.ts's --target confirmation flag is compared
+// against.
+export function projectRef(connectionString: string): string {
+  const url = new URL(connectionString);
+  return url.username.replace(/^postgres\./, '');
+}
+
 let schemaReady: Promise<void> | undefined;
 
 // Bare-bones schema setup, idempotent so it's safe to call on every process

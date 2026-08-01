@@ -104,6 +104,8 @@ merchant's data goes only into that merchant's own HubSpot account.</p>
   policy.</li>
   <li>Requests to the routes that can return bulk data are rate-limited per credential, and we automatically monitor
   for unusually high access volume.</li>
+  <li>We keep our own backups of the connection data described in Section 3, and have verified they can actually
+  be restored &mdash; not just that a backup file exists.</li>
 </ul>
 
 <h2>7. How long we keep it</h2>

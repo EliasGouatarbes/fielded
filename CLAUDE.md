@@ -2802,35 +2802,70 @@ marketing suite or Stacksync's enterprise-scale sync.
          key confirmed the rate limiter allows exactly 30 and 429s the
          rest, in the same window as configured. Verify instance stopped
          afterward, scratch port confirmed free.
-      3. **[BLOCKED ON MANUAL STEP]** Backup-restore test. Encryption at
-         rest and daily backups both already exist (Supabase-managed), but
-         "can we actually recover from one" has never been verified —
-         that's the actual DLP question a restore drill answers, and it's
-         not something achievable from this repo: it needs the Supabase
-         dashboard itself, which this session has no access to, and this
-         session doesn't have current, verified knowledge of exactly what
-         Supabase's free-tier restore flow looks like right now (self-serve
-         point-in-time restore has historically been a paid-plan feature;
-         worth confirming directly against the dashboard rather than
-         trusting a guess here). **Runbook for the user to run** (against
-         production's project, ref `bznybbtzdvnsycapplhl` — never the new
-         preprod one, which has nothing worth restoring yet):
-         1. Supabase dashboard → the production project → Database →
-            Backups. Confirm what's actually offered on the current plan
-            (scheduled daily backups vs. point-in-time recovery) and how
-            far back it goes.
-         2. If a "restore to a new project" option exists, use that for the
-            test — non-destructive, doesn't touch the live database. If
-            only an in-place restore is offered, do **not** run it against
-            production for a drill; either accept doing this check
-            read-only (confirm a backup exists and has a recent, sane
-            timestamp) or coordinate a maintenance window first.
-         3. Success criteria: the restored copy contains a `merchants` row
-            for the real connected dev store and boots (or is queryable)
-            without error — proves the backup is actually usable, not just
-            present.
-         Flag once done (or if the dashboard's actual options turn out to
-         differ from the above) and this line moves to DONE.
+      3. **[DONE, VERIFIED, 2026-08-01]** Backup-restore test. User checked
+         the Supabase dashboard directly: self-serve restore ("restore to a
+         new project") is a paid-plan feature, not available on this app's
+         free tier. Rather than pay for a Supabase Pro plan this
+         single-operator/pre-launch app doesn't otherwise need, built a
+         self-managed logical backup instead — proportionate to this app's
+         actual scale (three small tables, single-digit merchants), same
+         reasoning already applied to the `ENCRYPTION_KEY`/no-KMS call in
+         step 9.
+         - `src/scripts/backup.ts` (`npm run backup`): read-only dump of
+           `merchants`/`sync_log`/`access_log` from whatever `DATABASE_URL`
+           is configured, to a timestamped JSON file under `backups/` (new
+           `.gitignore` entry — these files carry real customer PII and
+           encrypted-but-real access tokens, never committed).
+         - `src/scripts/restoreDrill.ts` (`npm run restore-drill -- <file>
+           --target=<project-ref>`): insert-only restore (`ON CONFLICT DO
+           NOTHING` per table's primary key — never deletes/overwrites an
+           existing target row, safe to re-run). Requires `--target`
+           naming the project ref you expect to write to, checked against
+           the actually-configured `DATABASE_URL` before anything is
+           written — protects against a stale/typo'd `.env` silently
+           restoring into the wrong database. `databaseIdentity()`/
+           `projectRef()` extracted from `server.ts` into `src/db/client.ts`
+           so both scripts and the server share the same "which database is
+           this, really" logic rather than duplicating it.
+         - One real implementation detail worth remembering: `merchants`'s
+           two JSONB columns (`deal_rules`, `backfill_status`) can't just be
+           handed to `pg` as raw JS objects/arrays in a restore INSERT —
+           node-postgres formats a bare array/object parameter as a
+           Postgres `ARRAY` literal by default, not JSON, unless it's
+           pre-`JSON.stringify`'d first. `restoreDrill.ts`'s `JSON_COLUMNS`
+           handles this explicitly for those two columns.
+         **Live-verified end to end against the disposable preprod
+         database** (never production — this whole drill is exactly why
+         preprod exists): seeded a throwaway fake merchant row
+         (`drill-test-fake-store.myshopify.com`, same pattern as 10a's GDPR
+         test rows) with real-shaped `deal_rules`/`backfill_status` JSONB
+         values, dumped it plus the real `access_log` rows already there
+         (32 at the time), deleted both from the live database (simulating
+         real data loss), ran `restore-drill`, and confirmed: all 32
+         `access_log` rows and the merchant row reappeared, the JSONB
+         fields came back as real parsed JSON (not a mangled array
+         literal — checked directly via a throwaway verification query,
+         not assumed), and re-running the same restore a second time
+         inserted zero duplicates (`0 inserted, 32 already present` —
+         proves the idempotency claim, not just the happy path). Also
+         confirmed the `--target` safety guard actually refuses to run
+         when given production's project ref while pointed at preprod, before
+         testing the matching-ref success path. All throwaway drill
+         scripts, the seeded merchant row, and the local dump files were
+         deleted afterward — preprod confirmed back to its prior state
+         (0 merchants) via a final dump. `npm run build` clean; 89 tests
+         pass (no new pure logic — this is DB-writing glue, live-verified
+         rather than unit-tested, consistent with this project's existing
+         split).
+         **Operationally**: this only protects data an operator actually
+         backs up — there's no scheduled/automatic backup job (deliberately
+         not built: this app has no cron infra beyond the in-process daily
+         intervals already used for retention cleanup, and a backup job
+         writing PII to local disk unattended on a schedule is a bigger
+         design decision than this pass should make unprompted). For now,
+         `npm run backup` against production's `DATABASE_URL` is a manual
+         step the operator should run periodically and store the resulting
+         file somewhere access-controlled.
     - **Not yet touched**: re-answering the actual Shopify review form
       itself (change the two No's to Yes now that they're true, change the
       two Not-applicable's to Yes with justification) — that's a form

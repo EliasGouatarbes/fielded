@@ -14,6 +14,8 @@
     "register-webhooks": "ts-node --transpile-only src/scripts/register-webhooks.ts",
     "migrate-merchants": "ts-node --transpile-only src/scripts/migrate-merchants.ts",
     "encrypt-existing-tokens": "ts-node --transpile-only src/scripts/encrypt-existing-tokens.ts",
+    "backup": "ts-node --transpile-only src/scripts/backup.ts",
+    "restore-drill": "ts-node --transpile-only src/scripts/restoreDrill.ts",
     "test": "node --require ts-node/register/transpile-only --test \"src/**/*.test.ts\""
   },
   "dependencies": {

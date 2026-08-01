@@ -5,7 +5,7 @@ import { shopify, shopifyOAuthRouter } from './shopify/oauth';
 import { hubspotOAuthRouter, hashAdminApiKey, generateAndStoreAdminApiKey } from './hubspot/oauth';
 import { shopifyWebhookRouter } from './shopify/webhooks';
 import { normalizeShopDomain } from './shopify/token';
-import { pool } from './db/client';
+import { pool, databaseIdentity } from './db/client';
 import { getMerchant, saveDealRules, getShopsWithBrokenHubSpotConnection } from './db/merchants';
 import { getRecentSyncLog, deleteOldSyncLog } from './db/syncLog';
 import { logAccess, getRecentAccessLog, deleteOldAccessLog, getAccessVolumeAnomalies, isAdminAccessAnomalous, AccessAuthType } from './db/accessLog';
@@ -76,19 +76,6 @@ app.use(
     limit: '5mb',
   })
 );
-
-// Identifies *which* database an environment is pointed at without ever
-// exposing the password. Host alone isn't enough for this specifically:
-// Supabase's pooler hostname (aws-0-<region>.pooler.supabase.com) is shared
-// infrastructure across every project in that region, so two completely
-// different projects/databases show the identical host — only the username
-// (postgres.<project-ref>) actually distinguishes them. Found this the hard
-// way verifying the preprod/production split (2026-08-01): host-only logging
-// printed the same string for both until this was added.
-function databaseIdentity(connectionString: string): string {
-  const url = new URL(connectionString);
-  return `${url.username}@${url.host}`;
-}
 
 app.get('/health', asyncHandler(async (_req, res) => {
   let dbConnected = false;
