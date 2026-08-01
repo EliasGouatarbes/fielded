@@ -2654,3 +2654,185 @@ marketing suite or Stacksync's enterprise-scale sync.
     proactive backfill was run against the other already-connected test
     merchants; flagged rather than silently left for the next person to
     rediscover the same way this one was found.
+
+23. [IN PROGRESS, 2026-08-01] Shopify's "request to access protected customer
+    data" review form was rejected — two of its Yes/No/N/A answers didn't
+    hold up against the actual codebase: "Do you log access to personal
+    data?" (was No, genuinely true) and "Do you separate test and production
+    data?" (was No, genuinely true — CLAUDE.md's own step 9 note already
+    admitted local dev and Render share the same Supabase database). Also
+    flagged, as an answer-choice fix rather than a build item: "Do you limit
+    staff access to customers' personal data?" and "Do you respect and apply
+    customers' consent decisions?" were both marked Not applicable, which
+    reads as evasive given this app does have an access-control mechanism
+    (the admin/merchant API key gate below) and does process real customer
+    PII — should be answered Yes with a one-line justification instead, not
+    resubmitted as code changes.
+    - **[DONE, VERIFIED]** Access logging. New `access_log` table
+      (`src/db/client.ts`'s `ensureSchema`) and `src/db/accessLog.ts`
+      (`logAccess`/`getRecentAccessLog`/`deleteOldAccessLog`/
+      `deleteAccessLogForShop` — same shape as `src/db/syncLog.ts`).
+      `server.ts`'s `requireAdminOrMerchantAuth` (the gate on `/sync-status`,
+      `/access-log` itself, and every `/merchants/:shop/*` dashboard
+      endpoint) now records route/method/auth-type/shop/IP on every
+      successful authenticated request, fire-and-forget so a broken log
+      write can never fail the request it's logging. New `GET /access-log`
+      route (same admin-key/merchant-key auth split as `/sync-status`) makes
+      the trail actually reviewable rather than write-only. Retention: new
+      `ACCESS_LOG_RETENTION_DAYS` (default 90, `.env.example`), same daily
+      cleanup pattern as `sync_log`'s. `shop/redact` (the GDPR webhook) now
+      also purges a shop's `access_log` rows, alongside its existing
+      `sync_log`/`merchants` cleanup. `npm run build` clean; all 87 tests
+      pass unchanged — `access_log`, like `sync_log`, is DB-dependent glue
+      with no pure logic to unit test, consistent with this project's
+      existing testing split (live-verify DB/API glue, unit-test pure
+      functions).
+    - **[DONE, VERIFIED, 2026-08-01]** Test/production data separation. User
+      created a second Shopify Partner dev store
+      (`preprod-qxvbnpvn.myshopify.com`) and a second Supabase project
+      (project ref `mcdwvuecnarvnoetmpct`, distinct from production's
+      `bznybbtzdvnsycapplhl`) and handed back the domain + `DATABASE_URL`.
+      Local `.env` now points at both instead of production's — Render's own
+      env vars are untouched, still pointing at the original store/database.
+      Also rotated local's `ENCRYPTION_KEY` to a freshly-generated value
+      while at it: the old one *had* to match Render's exactly (shared DB,
+      pre-separation); now that local has its own database there's no
+      reason for a leaked preprod key to help decrypt real merchant tokens,
+      or vice versa. Blanked the legacy `SHOPIFY_ADMIN_ACCESS_TOKEN` (was
+      hubspottest-retveu6u's static token) rather than carrying it over — it
+      would have made `resolveShopifyAccessToken` (`src/shopify/token.ts`)
+      silently seed the *wrong* store's token against the new empty
+      database the first time it looked up a merchant row that doesn't
+      exist yet; the preprod store gets a real token via its own OAuth
+      handshake instead.
+      Caught and fixed one real gap in the verification tooling itself
+      while checking this: the boot-log/`  GET /health` fields added
+      earlier this pass logged the database *host* only
+      (`aws-0-eu-west-1.pooler.supabase.com`) — which, being Supabase's
+      shared regional pooler, is identical for every project in that
+      region, so it couldn't actually distinguish preprod from production.
+      Fixed with a new `databaseIdentity()` helper (`src/server.ts`) that
+      logs `username@host` instead — the username is `postgres.<project-ref>`,
+      which does differ. `GET /health`'s field renamed `database.host` →
+      `database.identity` accordingly.
+      Verified live: started a throwaway server instance on a scratch port
+      (production's normal port 3000 was already occupied by another
+      running dev-server process, left untouched rather than killed blind)
+      with the new `.env`. Boot log and `GET /health` both showed
+      `preprod-qxvbnpvn.myshopify.com` / `postgres.mcdwvuecnarvnoetmpct@...`
+      — confirmed distinct from production's store/project ref. Hit
+      `/sync-status` and the new `/access-log` route with `ADMIN_API_KEY`:
+      both succeeded against the fresh database (schema
+      auto-provisioned via `ensureSchema`, empty `sync_log`, one real
+      `access_log` row from that exact request), proving the whole
+      access-logging feature from this pass also works end to end against
+      real infrastructure, not just in isolation. Verify instance stopped
+      afterward. `npm run build` clean, all 87 tests pass.
+      **Not yet done**: the preprod store has no completed Shopify OAuth
+      handshake yet (needs a real browser visit to
+      `/auth/shopify?shop=preprod-qxvbnpvn.myshopify.com` while local dev is
+      running) — fine for now, since this step only needed the *database*
+      and *store domain* to be genuinely separate from production, not a
+      full working install.
+    - **[DONE, 2026-08-01]** Privacy policy update (`src/privacyPolicyPage.ts`).
+      Section 6 ("How we protect this data") was stale against the two fixes
+      above — didn't mention access logging or that testing is now walled
+      off from real data, both now real, verifiable claims worth stating.
+      Added two bullets there, a matching retention bullet in Section 7 (90
+      days, same as sync logs), and bumped the "Last updated" date. Still
+      the existing DRAFT (needs a lawyer's review before this URL is
+      actually submitted/linked, per the file's own top-of-file note,
+      2026-07-30) — this only keeps the draft's content in sync with actual
+      system behavior, doesn't change that status. `npm run build` clean.
+    - **[DONE, VERIFIED, 2026-08-01]** Data loss prevention — the fourth
+      answer flagged by the rejected review ("Do you have a data loss
+      prevention strategy?", was No, genuinely true: nothing here was
+      purpose-built for it before this pass). Two code-level pieces plus one
+      still-manual step:
+      1. **Credential-keyed rate limiting on the two bulk-PII-read routes.**
+         `GET /sync-status` and `GET /access-log` can each return up to 500
+         rows of customer emails/order numbers/IPs per call — previously
+         gated only by the same generic 60/min-per-IP `apiRateLimiter`
+         every other route uses, sized for anti-abuse/DoS, not tuned to
+         this specific bulk-read shape. New `dataAccessRateLimiter`
+         (`src/rateLimit.ts`, 30 requests/15 min) now gates just those two
+         routes — deliberately keyed on a SHA-256 hash of the bearer token
+         itself, not IP: IP-keying is the wrong granularity for a
+         credential-gated route (a stolen key gets used from whatever IP an
+         attacker has; a legitimate merchant/operator may reasonably call
+         from more than one). Hashing follows the same reasoning as
+         `hashAdminApiKey` (`src/hubspot/oauth.ts`) — never hold the raw
+         token any more than necessary. Falls back to IP only when no
+         `Authorization` header is present at all, using
+         `express-rate-limit`'s own `ipKeyGenerator` helper for that
+         fallback — a real bug caught live, not by inspection: a bare
+         `req.ip` fallback throws `ERR_ERL_KEY_GEN_IPV6` at startup
+         (the library validates against exactly this IPv6-normalization
+         mistake), crashing the process before it ever reaches
+         `app.listen`.
+      2. **Anomaly detection over the access-log audit trail.** New
+         `getAccessVolumeAnomalies()`/`isAdminAccessAnomalous()`
+         (`src/db/accessLog.ts`) query `access_log` itself for unusual
+         volume in the last 60 minutes — deliberately DB-backed rather than
+         an in-process counter, since in-memory counters reset on every
+         deploy/restart and aren't visible remotely (the exact lesson
+         already learned from 10f's broken-HubSpot-connection detection).
+         Thresholds are generous, matching real usage: the dashboard has no
+         auto-polling (`src/dashboardPage.ts`, manual refresh only), so
+         legitimate traffic is a handful of requests per visit — >30
+         admin-key requests/hour, or >15 requests/hour to a single
+         merchant's own key, are the flags. No email/Slack channel exists
+         for this app (same 10f precedent, deliberately not built this
+         pass either) — surfaced two ways instead: a new `runDlpAnomalyCheck`
+         interval (`server.ts`, every 15 min, same lifecycle-managed
+         pattern as the sync/access-log retention cleanups) logs loudly
+         (`[DLP] ...`) into Render's own log stream, and `GET /access-log`'s
+         operator-wide response (no `?shop=`) now includes an `anomalies`
+         field alongside the log entries.
+         `isAdminAccessAnomalous` is pure logic, unit-tested
+         (`src/db/accessLog.test.ts`, new) — matching this project's
+         established split of unit-testing pure functions and live-verifying
+         DB/API glue rather than mocking it. 89 tests pass (87 prior + 2
+         new); clean build.
+         **Live-verified** against the real preprod database (the one wired
+         two passes ago) on a throwaway scratch-port instance: `GET
+         /access-log`'s global response returned a correctly-shaped
+         `anomalies` object with a real `adminAccessCount` computed from
+         actual rows; looping 32 requests against it with the real admin
+         key confirmed the rate limiter allows exactly 30 and 429s the
+         rest, in the same window as configured. Verify instance stopped
+         afterward, scratch port confirmed free.
+      3. **[BLOCKED ON MANUAL STEP]** Backup-restore test. Encryption at
+         rest and daily backups both already exist (Supabase-managed), but
+         "can we actually recover from one" has never been verified —
+         that's the actual DLP question a restore drill answers, and it's
+         not something achievable from this repo: it needs the Supabase
+         dashboard itself, which this session has no access to, and this
+         session doesn't have current, verified knowledge of exactly what
+         Supabase's free-tier restore flow looks like right now (self-serve
+         point-in-time restore has historically been a paid-plan feature;
+         worth confirming directly against the dashboard rather than
+         trusting a guess here). **Runbook for the user to run** (against
+         production's project, ref `bznybbtzdvnsycapplhl` — never the new
+         preprod one, which has nothing worth restoring yet):
+         1. Supabase dashboard → the production project → Database →
+            Backups. Confirm what's actually offered on the current plan
+            (scheduled daily backups vs. point-in-time recovery) and how
+            far back it goes.
+         2. If a "restore to a new project" option exists, use that for the
+            test — non-destructive, doesn't touch the live database. If
+            only an in-place restore is offered, do **not** run it against
+            production for a drill; either accept doing this check
+            read-only (confirm a backup exists and has a recent, sane
+            timestamp) or coordinate a maintenance window first.
+         3. Success criteria: the restored copy contains a `merchants` row
+            for the real connected dev store and boots (or is queryable)
+            without error — proves the backup is actually usable, not just
+            present.
+         Flag once done (or if the dashboard's actual options turn out to
+         differ from the above) and this line moves to DONE.
+    - **Not yet touched**: re-answering the actual Shopify review form
+      itself (change the two No's to Yes now that they're true, change the
+      two Not-applicable's to Yes with justification) — that's a form
+      resubmission, not a code change, left for the user to do once the
+      test/prod piece above lands.

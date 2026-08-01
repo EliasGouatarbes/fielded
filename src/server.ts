@@ -8,6 +8,7 @@ import { normalizeShopDomain } from './shopify/token';
 import { pool } from './db/client';
 import { getMerchant, saveDealRules, getShopsWithBrokenHubSpotConnection } from './db/merchants';
 import { getRecentSyncLog, deleteOldSyncLog } from './db/syncLog';
+import { logAccess, getRecentAccessLog, deleteOldAccessLog, getAccessVolumeAnomalies, isAdminAccessAnomalous, AccessAuthType } from './db/accessLog';
 import { validateDealRules, DealRuleValidationError } from './hubspot/dealRules';
 import { registerWebhooksForShop, getWebhookRegistrationStatus } from './shopify/webhookRegistration';
 import { renderDashboardPage } from './dashboardPage';
@@ -16,7 +17,7 @@ import { renderTermsPage } from './termsPage';
 import { renderDpaPage } from './dpaPage';
 import { renderPricingPage } from './pricingPage';
 import { renderPage } from './htmlPage';
-import { TRUST_PROXY_HOPS, apiRateLimiter } from './rateLimit';
+import { TRUST_PROXY_HOPS, apiRateLimiter, dataAccessRateLimiter } from './rateLimit';
 import { backfillMerchant } from './backfillMerchant';
 import { resolveMerchantContext } from './hubspot/tokens';
 import { asyncHandler } from './asyncHandler';
@@ -76,6 +77,19 @@ app.use(
   })
 );
 
+// Identifies *which* database an environment is pointed at without ever
+// exposing the password. Host alone isn't enough for this specifically:
+// Supabase's pooler hostname (aws-0-<region>.pooler.supabase.com) is shared
+// infrastructure across every project in that region, so two completely
+// different projects/databases show the identical host — only the username
+// (postgres.<project-ref>) actually distinguishes them. Found this the hard
+// way verifying the preprod/production split (2026-08-01): host-only logging
+// printed the same string for both until this was added.
+function databaseIdentity(connectionString: string): string {
+  const url = new URL(connectionString);
+  return `${url.username}@${url.host}`;
+}
+
 app.get('/health', asyncHandler(async (_req, res) => {
   let dbConnected = false;
   try {
@@ -106,6 +120,11 @@ app.get('/health', asyncHandler(async (_req, res) => {
     },
     database: {
       connected: dbConnected,
+      // username@host, never the password — lets a remote check confirm
+      // this deployment is actually pointed at the environment it's
+      // supposed to be. Username specifically because Supabase's pooler
+      // host is shared across projects in a region (see databaseIdentity).
+      identity: databaseIdentity(config.db.connectionString),
     },
   });
 }));
@@ -192,6 +211,22 @@ function timingSafeEqualStrings(a: string, b: string): boolean {
   return aBuf.length === bBuf.length && crypto.timingSafeEqual(aBuf, bBuf);
 }
 
+// Records every successful read/write through this gate — the "who accessed
+// customer data, when, from where" trail that was missing entirely before
+// (src/db/accessLog.ts). Best-effort and not awaited on the request's
+// critical path: a broken log write must never turn a legitimate request
+// into a 500, and access_log is an audit trail, not something a caller is
+// waiting on.
+function recordAccess(req: express.Request, authType: AccessAuthType, shopDomain: string | undefined): void {
+  logAccess({
+    route: req.baseUrl + req.path,
+    method: req.method,
+    authType,
+    shopDomain,
+    ip: req.ip,
+  }).catch((err) => console.error('logAccess call failed:', err));
+}
+
 const requireAdminOrMerchantAuth = asyncHandler(async (req, res, next) => {
   const provided = req.header('Authorization')?.replace(/^Bearer\s+/i, '') ?? '';
   const shopParam = (req.params.shop as string | undefined) ?? (typeof req.query.shop === 'string' ? req.query.shop : undefined);
@@ -199,6 +234,7 @@ const requireAdminOrMerchantAuth = asyncHandler(async (req, res, next) => {
 
   if (provided && timingSafeEqualStrings(provided, config.server.adminApiKey)) {
     req.shopDomain = shopDomain;
+    recordAccess(req, 'admin', shopDomain);
     next();
     return;
   }
@@ -215,6 +251,7 @@ const requireAdminOrMerchantAuth = asyncHandler(async (req, res, next) => {
   }
 
   req.shopDomain = shopDomain;
+  recordAccess(req, 'merchant', shopDomain);
   next();
 });
 
@@ -224,7 +261,7 @@ const requireAdminOrMerchantAuth = asyncHandler(async (req, res, next) => {
 // (admin key, no ?shop=) gets every currently-broken shop in one call,
 // since that's the "proactive" part for a single-operator app with no
 // email/Slack integration: this is the thing to actually check.
-app.get('/sync-status', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
+app.get('/sync-status', dataAccessRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 500);
   try {
     const entries = await getRecentSyncLog(limit, req.shopDomain);
@@ -238,6 +275,28 @@ app.get('/sync-status', apiRateLimiter, requireAdminOrMerchantAuth, asyncHandler
   } catch (err) {
     console.error('Failed to fetch sync log:', err);
     res.status(500).send('Failed to fetch sync log.');
+  }
+}));
+
+// --- Access log (who read customer/merchant data, when, from where) ---
+// Same shape/auth as /sync-status: a merchant-scoped request sees only its
+// own rows, the global operator key sees everything. This route's own hits
+// are themselves logged by requireAdminOrMerchantAuth like any other.
+app.get('/access-log', dataAccessRateLimiter, requireAdminOrMerchantAuth, asyncHandler(async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  try {
+    const entries = await getRecentAccessLog(limit, req.shopDomain);
+    if (req.shopDomain) {
+      res.json({ entries });
+    } else {
+      // DLP anomaly signal (operator-wide view only — a merchant-scoped
+      // request has no business seeing volume across other merchants).
+      const anomalies = await getAccessVolumeAnomalies();
+      res.json({ entries, anomalies });
+    }
+  } catch (err) {
+    console.error('Failed to fetch access log:', err);
+    res.status(500).send('Failed to fetch access log.');
   }
 }));
 
@@ -469,6 +528,14 @@ app.use((err: unknown, req: express.Request, res: express.Response, _next: expre
 const server = app.listen(config.server.port, () => {
   console.log(`Server listening on http://localhost:${config.server.port}`);
   console.log(`Health check: http://localhost:${config.server.port}/health`);
+  // Printed at boot specifically so it's impossible to lose track of which
+  // Shopify store/database a running process is actually pointed at — the
+  // pre-launch audit found local dev and Render silently sharing the same
+  // Supabase database (CLAUDE.md, encryption-at-rest step) with no signal
+  // that would have caught it earlier than a manual DB query. Host only,
+  // never the connection string itself (which carries the DB password).
+  console.log(`Shopify store: ${config.shopify.storeDomain}`);
+  console.log(`Database: ${databaseIdentity(config.db.connectionString)}`);
 });
 
 // Runs once shortly after boot and then daily — matches ensureSchema's own
@@ -484,9 +551,41 @@ function runSyncLogCleanup(): void {
     })
     .catch((err) => console.error('sync_log retention cleanup failed:', err));
 }
+function runAccessLogCleanup(): void {
+  deleteOldAccessLog(config.server.accessLogRetentionDays)
+    .then((deleted) => {
+      if (deleted > 0) console.log(`access_log retention: deleted ${deleted} row(s) older than ${config.server.accessLogRetentionDays} days.`);
+    })
+    .catch((err) => console.error('access_log retention cleanup failed:', err));
+}
 setTimeout(runSyncLogCleanup, 10_000).unref();
+setTimeout(runAccessLogCleanup, 10_000).unref();
 const syncLogCleanupInterval = setInterval(runSyncLogCleanup, SYNC_LOG_CLEANUP_INTERVAL_MS);
 syncLogCleanupInterval.unref();
+const accessLogCleanupInterval = setInterval(runAccessLogCleanup, SYNC_LOG_CLEANUP_INTERVAL_MS);
+accessLogCleanupInterval.unref();
+
+// DLP anomaly check — same "log loudly, no dedicated alert channel" pattern
+// as 10f's broken-HubSpot-connection detection (this app still has no
+// email/Slack integration). Runs on the same window the thresholds
+// themselves are defined over (src/db/accessLog.ts) so a sustained anomaly
+// gets logged repeatedly rather than only once at the moment it started.
+const DLP_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+function runDlpAnomalyCheck(): void {
+  getAccessVolumeAnomalies()
+    .then((anomalies) => {
+      if (isAdminAccessAnomalous(anomalies.adminAccessCount)) {
+        console.error(`[DLP] Unusual admin-key access volume: ${anomalies.adminAccessCount} requests in the last hour.`);
+      }
+      for (const shop of anomalies.shopsOverThreshold) {
+        console.error(`[DLP] Unusual access volume for ${shop.shopDomain}: ${shop.count} requests in the last hour.`);
+      }
+    })
+    .catch((err) => console.error('DLP anomaly check failed:', err));
+}
+setTimeout(runDlpAnomalyCheck, 10_000).unref();
+const dlpCheckInterval = setInterval(runDlpAnomalyCheck, DLP_CHECK_INTERVAL_MS);
+dlpCheckInterval.unref();
 
 // A Render deploy or restart sends SIGTERM, not a crash — previously
 // unhandled, so in-flight requests were simply severed rather than allowed
@@ -498,6 +597,8 @@ syncLogCleanupInterval.unref();
 function shutdown(signal: string): void {
   console.log(`${signal} received, shutting down gracefully...`);
   clearInterval(syncLogCleanupInterval);
+  clearInterval(accessLogCleanupInterval);
+  clearInterval(dlpCheckInterval);
   server.close(() => {
     pool
       .end()

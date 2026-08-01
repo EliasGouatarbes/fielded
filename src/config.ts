@@ -33,6 +33,9 @@ export interface AppConfig {
     // issue after the fact, short enough not to become its own data-retention
     // liability.
     syncLogRetentionDays: number;
+    // Same rationale as syncLogRetentionDays, applied to access_log (which
+    // route was hit, by which auth type, from which IP) instead of sync_log.
+    accessLogRetentionDays: number;
   };
   db: {
     connectionString: string;
@@ -107,6 +110,7 @@ function loadConfig(): AppConfig {
       appUrl: optional('APP_URL', `http://localhost:${optional('PORT', '3000')}`),
       adminApiKey: process.env.ADMIN_API_KEY as string,
       syncLogRetentionDays: Number(optional('SYNC_LOG_RETENTION_DAYS', '90')),
+      accessLogRetentionDays: Number(optional('ACCESS_LOG_RETENTION_DAYS', '90')),
     },
     db: {
       connectionString: process.env.DATABASE_URL as string,

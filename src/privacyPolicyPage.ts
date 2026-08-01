@@ -19,7 +19,7 @@ import { renderPage } from './htmlPage';
 export function renderPrivacyPolicyPage(): string {
   const body = `
 <h1>Privacy Policy</h1>
-<p class="muted">Last updated: 30 July 2026</p>
+<p class="muted">Last updated: 1 August 2026</p>
 
 <p>This policy covers <strong>Fielded</strong> (&ldquo;the app,&rdquo; &ldquo;we,&rdquo; &ldquo;us&rdquo;), a Shopify app that
 syncs order and customer data from a merchant's Shopify store into that merchant's own HubSpot account. It's operated by
@@ -96,6 +96,14 @@ merchant's data goes only into that merchant's own HubSpot account.</p>
   genuinely originated from Shopify.</li>
   <li>Dashboard access keys are stored only as one-way hashes &mdash; not even we can recover a lost key; a merchant
   who loses theirs has to reconnect their HubSpot account to get a new one.</li>
+  <li>We keep an access log of every authenticated read of merchant/connection data through our own internal tools
+  &mdash; recording when it happened, through which route, and by which authentication method &mdash; so any access to
+  this data is auditable after the fact.</li>
+  <li>Development and testing never runs against real merchant or customer data: our test environment uses its own
+  separate database and a dedicated test store, entirely apart from the production systems described in this
+  policy.</li>
+  <li>Requests to the routes that can return bulk data are rate-limited per credential, and we automatically monitor
+  for unusually high access volume.</li>
 </ul>
 
 <h2>7. How long we keep it</h2>
@@ -104,6 +112,8 @@ merchant's data goes only into that merchant's own HubSpot account.</p>
   installed, and deleted automatically within 48 hours of the app being uninstalled.</li>
   <li><strong>Sync activity logs</strong> (a record of what synced and whether it succeeded, not full order contents)
   are kept for 90 days and then automatically and permanently deleted.</li>
+  <li><strong>Access logs</strong> (Section 6 &mdash; a record that our own tools were used to read data, not the data
+  itself) are also kept for 90 days and then automatically and permanently deleted.</li>
   <li>Beyond that, this app does not retain customer order/contact data itself &mdash; once synced, that data lives in
   the merchant's own HubSpot account, governed by their own retention choices there.</li>
 </ul>

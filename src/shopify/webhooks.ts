@@ -4,6 +4,7 @@ import { config } from '../config';
 import { syncCustomer, syncOrder, ShopifyCustomer, ShopifyOrder } from '../sync';
 import { resolveMerchantContext } from '../hubspot/tokens';
 import { logSyncResult, deleteSyncLogForShop, deleteSyncLogForCustomer } from '../db/syncLog';
+import { deleteAccessLogForShop } from '../db/accessLog';
 import { deleteMerchant, updateBillingStatus, BillingStatus } from '../db/merchants';
 import { normalizeShopDomain } from './token';
 import { fetchOrderById } from './graphqlMapping';
@@ -338,8 +339,9 @@ shopifyWebhookRouter.post('/shop/redact', asyncHandler(async (req, res) => {
   if (shopDomainRaw) {
     const shopDomain = normalizeShopDomain(shopDomainRaw);
     await deleteSyncLogForShop(shopDomain);
+    await deleteAccessLogForShop(shopDomain);
     await deleteMerchant(shopDomain);
-    console.log(`[GDPR] shop/redact — shop=${shopDomain}: deleted merchant row and all sync_log entries.`);
+    console.log(`[GDPR] shop/redact — shop=${shopDomain}: deleted merchant row and all sync_log/access_log entries.`);
   }
   res.status(200).send('ok');
 }));

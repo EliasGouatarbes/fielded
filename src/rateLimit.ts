@@ -1,4 +1,5 @@
-import rateLimit from 'express-rate-limit';
+import crypto from 'crypto';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
 // Render sits behind its own proxy (with Cloudflare in front of that), so
 // `req.ip` reflects the proxy's address, not the real client, unless
@@ -46,4 +47,31 @@ export const apiRateLimiter = rateLimit({
   limit: 60,
   standardHeaders: true,
   legacyHeaders: false,
+});
+
+// DLP measure: a tighter limiter specifically for the two routes that
+// return bulk PII (GET /sync-status, GET /access-log — up to 500 customer
+// emails/order numbers/IPs per call), keyed by the presented credential
+// itself rather than IP. IP-keying (apiRateLimiter's approach, fine for
+// generic abuse/DoS mitigation) is the wrong granularity for a
+// credential-gated route: a stolen key gets used from whatever IP the
+// attacker has, and conversely a legitimate merchant/operator may
+// reasonably call from more than one IP. Keys on a hash of the bearer
+// token (never the raw token itself, same reasoning as
+// hashAdminApiKey — src/hubspot/oauth.ts) so an invalid/guessed key is
+// throttled too, not just a confirmed-valid one; falls back to IP only
+// when no Authorization header was sent at all. Limit is deliberately
+// generous for real use (the dashboard has no auto-polling — manual
+// refresh only, src/dashboardPage.ts) while still meaningfully slowing a
+// scripted bulk-pull loop.
+export const dataAccessRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const provided = req.header('Authorization')?.replace(/^Bearer\s+/i, '');
+    if (!provided) return ipKeyGenerator(req.ip ?? 'no-ip');
+    return crypto.createHash('sha256').update(provided).digest('hex');
+  },
 });

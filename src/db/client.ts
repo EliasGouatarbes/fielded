@@ -92,6 +92,23 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS sync_log_created_at_idx ON sync_log (created_at DESC);
       CREATE INDEX IF NOT EXISTS sync_log_shop_created_idx ON sync_log (shop_domain, created_at DESC);
 
+      -- Records every authenticated read of merchant/customer data through
+      -- the admin/merchant-key-gated routes (/sync-status, /merchants/:shop/*,
+      -- /dashboard's data endpoints) — see src/db/accessLog.ts. shop_domain is
+      -- nullable: the global operator key can hit these routes with no
+      -- ?shop= at all (e.g. GET /sync-status across every merchant).
+      CREATE TABLE IF NOT EXISTS access_log (
+        id BIGSERIAL PRIMARY KEY,
+        route TEXT NOT NULL,
+        method TEXT NOT NULL,
+        auth_type TEXT NOT NULL,
+        shop_domain TEXT,
+        ip TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS access_log_created_at_idx ON access_log (created_at DESC);
+      CREATE INDEX IF NOT EXISTS access_log_shop_created_idx ON access_log (shop_domain, created_at DESC);
+
       -- Covers an already-deployed merchants table predating these columns
       -- (CREATE TABLE IF NOT EXISTS above is a no-op there) — idempotent,
       -- safe to run on every process start same as everything else here.
