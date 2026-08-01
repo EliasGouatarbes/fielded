@@ -2866,6 +2866,41 @@ marketing suite or Stacksync's enterprise-scale sync.
          `npm run backup` against production's `DATABASE_URL` is a manual
          step the operator should run periodically and store the resulting
          file somewhere access-controlled.
+         **User decision, 2026-08-01**: this self-managed approach is a
+         deliberate stopgap, not the permanent answer — plan is to upgrade
+         Supabase's production project to a paid tier (unlocking real
+         self-serve restore) once Fielded has actual paying customers,
+         revisiting `backup.ts`/`restoreDrill.ts`'s role at that point.
+    - **[DONE, VERIFIED, 2026-08-01]** Production database cleanup, ahead of
+      submitting for review. Used `backup.ts` (read-only) to inspect
+      production before touching anything: 7 `merchants` rows, all clearly
+      dev/test stores from the build process (`hubspottest-retveu6u`,
+      `test-yanprxxc`, `screencast-xzpvyot9`, `32r3`, `demo-x9nz9jf0`,
+      `uvszh1-m5`, `demo-store-gjgvpwn8` — none resembling a real merchant),
+      447 `sync_log` rows dated 2026-07-24 through 2026-07-31 (matching this
+      whole build's timeline), 0 `access_log` rows (that feature postdates
+      all of these). User confirmed: wipe all of it — now that preprod
+      exists as the dedicated ongoing test environment (this same pass),
+      none of these dev-era stores have a reason to still be connected in
+      production.
+      Took a fresh pre-cleanup snapshot first (`npm run backup` against
+      production — the standard, now-proven backup path from this same
+      pass) before deleting anything, kept locally as the safety net
+      (`backups/backup-bznybbtzdvnsycapplhl-2026-08-01T07-07-37-722Z.json`
+      — gitignored, never committed, contains real encrypted tokens and
+      test-store sync history, so treat it like a database credential:
+      don't move it anywhere less access-controlled than this machine).
+      Wiped via a throwaway script with the same `--target=<project-ref>`
+      safety guard as `restoreDrill.ts` (refuses to run unless the caller
+      names the exact project it expects to be wiping) — deleted afterward,
+      not committed, same disposable-tooling pattern as the drill's own
+      throwaway seed/wipe/verify scripts. Verified via a second `npm run
+      backup`: production now shows 0 merchants, 0 sync_log, 0 access_log.
+      **Practical effect**: any of those 7 dev/test stores that still has
+      the app installed will now fail to sync (no merchant row to resolve)
+      until/unless someone reconnects — acceptable and intended, since
+      they were never real merchants and preprod is where testing happens
+      from here on.
     - **Not yet touched**: re-answering the actual Shopify review form
       itself (change the two No's to Yes now that they're true, change the
       two Not-applicable's to Yes with justification) — that's a form
